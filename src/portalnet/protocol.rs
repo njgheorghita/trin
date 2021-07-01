@@ -1,16 +1,20 @@
 #![allow(dead_code)]
 
+use std::convert::TryInto;
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use super::{
     discovery::{Config as DiscoveryConfig, Discovery},
-    types::{FindContent, FindNodes, FoundContent, Nodes, Ping, Pong, Request, Response},
+    types::{FindContent, FindNodes, FoundContent, Nodes, Ping, Pong, Request, Response, SszEnr},
+    utils::xor_two_values,
     U256,
 };
 use super::{types::Message, Enr};
 use discv5::{Discv5ConfigBuilder, Discv5Event, TalkRequest};
 use log::{debug, error, warn};
+use rocksdb::{DB, IteratorMode, Options};
 use tokio::sync::mpsc;
 
 use super::socket;
@@ -45,6 +49,7 @@ pub struct PortalnetEvents {
     data_radius: U256,
     discovery: Arc<Discovery>,
     protocol_receiver: mpsc::Receiver<Discv5Event>,
+    db: DB,
 }
 
 impl PortalnetEvents {
@@ -59,12 +64,16 @@ impl PortalnetEvents {
             };
 
             let reply = match self.process_one_request(&request).await {
-                Ok(r) => Message::Response(r).to_bytes(),
+                Ok(r) => {
+                    println!("--- init reply: {:?}", r);
+                    Message::Response(r).to_bytes()
+                },
                 Err(e) => {
                     error!("failed to process portal event: {}", e);
                     e.into_bytes()
                 }
             };
+            println!("----- reply: {:?}", reply);
 
             if let Err(e) = request.respond(reply) {
                 warn!("failed to send reply: {}", e);
@@ -100,13 +109,29 @@ impl PortalnetEvents {
                 let distances64: Vec<u64> = distances.iter().map(|x| (*x).into()).collect();
                 let enrs = self.discovery.find_nodes_response(distances64);
                 Response::Nodes(Nodes {
-                    total: enrs.len() as u8,
+                // from spec: total: The total number of Nodes response messages being sent.
+                // not number of enrs
+                    total: 1 as u8,
                     enrs,
                 })
             }
             // TODO
-            Request::FindContent(FindContent { .. }) => {
-                Response::FoundContent(FoundContent { enrs: vec![] })
+            Request::FindContent(FindContent { content_key }) => {
+                println!("looking up: {:02X?}", content_key);
+                match self.db.get(&content_key) {
+                    Ok(Some(value)) => {
+                        println!("---- found value: {:02X?}", value);
+                        let empty_enrs: Vec<SszEnr> = vec![];
+                        Response::FoundContent( FoundContent { enrs: empty_enrs, payload: value })
+                    },
+                    Ok(None) => {
+                        println!("---- value not found");
+                        let enrs = self.discovery.find_nodes_close_to_content(content_key);
+                        let empty_payload: Vec<u8> = vec![];
+                        Response::FoundContent( FoundContent { enrs: enrs, payload: empty_payload })
+                    },
+                    Err(e) => panic!("operational error encountered: {}", e),
+                }
             }
         };
 
@@ -148,10 +173,62 @@ impl PortalnetProtocol {
             data_radius: portal_config.data_radius,
         };
 
+        // preimage stuff here
+        //
+
+        fn demo<T, const N: usize>(v: Vec<T>) -> [T; N] {
+            v.try_into()
+                .unwrap_or_else(|v: Vec<T>| panic!("Expected a Vec of length {} but it was {}", N, v.len()))
+        }
+
+
+        let default_preimage_path = match env::var("TRIN_DUMP_DB_PATH") {
+            Ok(val) => val,
+            Err(_) => panic!(
+                "Must supply Infura key as environment variable, like:\n\
+                TRIN_DUMP_DB_PATH=\"/path\" trin"
+            ),
+        };
+
+        println!("doing preimage lookup");
+        let node_id = proto.discovery.discv5.local_enr().node_id().raw();
+        let node_id_vector = node_id.iter().cloned().collect();
+        println!("i am {:02X?}", node_id);
+        println!("data radius: {}", portal_config.data_radius);
+        let half_data_radius = U256::MAX / 2;
+        println!("half data radius: {}", half_data_radius);
+        let db = DB::open_default(default_preimage_path).unwrap();
+        let mut iter = db.iterator(IteratorMode::Start);
+        let mut count = 0;
+        let mut total_count = 0;
+        for (key, value) in iter {
+            let key_vector = (key as Box<[u8]>).into_vec();
+            let other_vector = key_vector.clone();
+            let one_more_vector = key_vector.clone();
+            let diff = xor_two_values(&node_id_vector, &key_vector);
+            let other_diff = diff.clone();
+            let thing: [u8; 32] = demo(diff);
+            let other = U256::from_big_endian(&thing);
+            if other < half_data_radius {
+                //if count < 5 {
+                    //println!("Saw {:02X?} : {:02X?}", other_vector, value);
+                //}
+                //println!("key: {:02X?}", one_more_vector); 
+                //println!("diff: {:02X?}", other_diff); 
+                //println!("u256: {:?}", other); 
+                count += 1;
+            } else {
+                //println!(" skipping content key");
+            }
+            total_count += 1;
+        }
+        println!("lookup finished: added {:?} values out of {:?}", count, total_count);
+
         let events = PortalnetEvents {
             data_radius: portal_config.data_radius,
             discovery,
             protocol_receiver,
+            db,
         };
 
         Ok((proto, events))

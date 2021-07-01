@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use super::{protocol::PROTOCOL, Enr};
+use super::types::SszEnr;
+use super::utils::xor_two_values;
 use discv5::enr::{CombinedKey, EnrBuilder, NodeId};
 use discv5::{Discv5, Discv5Config};
 use log::info;
@@ -35,7 +37,10 @@ pub struct Discovery {
 
 impl Discovery {
     pub fn new(config: Config) -> Result<Self, String> {
-        let enr_key = CombinedKey::generate_secp256k1();
+
+        //let enr_key = CombinedKey::generate_secp256k1();
+        let pk = vec![1; 32];
+        let enr_key = CombinedKey::secp256k1_from_bytes(pk.clone().as_mut_slice()).unwrap();
 
         let enr = {
             let mut builder = EnrBuilder::new("v4");
@@ -44,7 +49,7 @@ impl Discovery {
             builder.build(&enr_key).unwrap()
         };
 
-        info!(
+        println!(
             "Starting discv5 with local enr encoded={:?} decoded={}",
             enr, enr
         );
@@ -110,6 +115,19 @@ impl Discovery {
     /// Returns closest nodes according to given distances.
     pub fn find_nodes_response(&self, distances: Vec<u64>) -> Vec<Enr> {
         self.discv5.nodes_by_distance(distances)
+    }
+
+    /// Returns list of nodes (max 32) closer to content than self.
+    pub fn find_nodes_close_to_content(&self, content_key: Vec<u8>) -> Vec<SszEnr> {
+        let self_node_id = self.local_enr().node_id();
+        let self_distance = xor_two_values(&content_key, &self_node_id.raw().to_vec());
+        // these should be sorted by distance?
+        let enrs: Vec<Enr> = self.discv5.table_entries_enr()
+            .into_iter()
+            .filter(|enr| xor_two_values(&content_key, &enr.node_id().raw().to_vec()) < self_distance)
+            .take(32)
+            .collect();
+        enrs.into_iter().map(|enr| SszEnr::new(enr)).collect()
     }
 
     pub async fn send_talkreq(
