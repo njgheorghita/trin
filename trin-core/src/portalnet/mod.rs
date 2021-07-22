@@ -6,6 +6,7 @@ use uint::construct_uint;
 
 pub mod discovery;
 pub mod protocol;
+pub mod trie;
 pub mod types;
 
 pub type Enr = discv5::enr::Enr<CombinedKey>;
