@@ -220,7 +220,6 @@ fn handle_request(
             "result": "trin 0.0.1-alpha",
         })
         .to_string()),
-        "eth_getBalance" => dispatch_portal_request(obj, portal_tx),
         _ if obj.method.as_str().starts_with("discv5") => dispatch_portal_request(obj, portal_tx),
         _ => dispatch_infura_request(obj, infura_url),
     }
@@ -255,11 +254,6 @@ fn dispatch_portal_request(
         "discv5_routingTableInfo" => PortalEndpoint {
             kind: PortalEndpointKind::RoutingTableInfo,
             params: None,
-            resp: resp_tx,
-        },
-        "eth_getBalance" => PortalEndpoint {
-            kind: PortalEndpointKind::EthGetBalance,
-            params: obj.params,
             resp: resp_tx,
         },
         _ => {

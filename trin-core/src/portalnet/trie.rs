@@ -13,6 +13,18 @@ use std::ops::Range;
 use tiny_keccak::Keccak;
 use trie::{ChildReference, Hasher, Trie, TrieDB};
 
+//
+// patricia-merkle trie overlay for a rocksdb
+// uses trie-db library
+// supports eth_getBalance (though plumbing was removed in latest commit)
+// uses a preseeded rocksdb - via py-evm and `seed_rocksdb.py` script
+// functionality - atm it will resolve an account that's stored in db
+// todo: insert & all the other fancy things
+// dev was put on hold due to storage network model update
+// will pick up / merge in the future as integration becomes obvious
+//
+
+
 pub struct PortalDB {
     db: DB,
 }
@@ -302,14 +314,10 @@ impl PortalTrie {
 mod test {
     use super::*;
 
-    // python script to generate rocksdb for testing
-    // ../xxx.py
-    //
     #[test]
-    #[ignore]
     fn test_account_lookup() {
         let portal_trie = PortalTrie {
-            db_path: "./src/portalnet/test_assets/test_merkle.db".to_owned(),
+            db_path: "./src/portalnet/test_assets/seed_test_x.db".to_owned(),
         };
         let account = portal_trie
             .resolve_account(
@@ -327,7 +335,6 @@ mod test {
     }
 
     #[test]
-    #[ignore]
     fn test_invalid_account_lookup() {
         let portal_trie = PortalTrie {
             db_path: "./src/portalnet/test_assets/test_merkle.db".to_owned(),

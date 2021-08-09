@@ -27,7 +27,6 @@ type Responder<T, E> = mpsc::UnboundedSender<Result<T, E>>;
 pub enum PortalEndpointKind {
     NodeInfo,
     RoutingTableInfo,
-    EthGetBalance,
 }
 
 #[derive(Debug)]
@@ -59,7 +58,6 @@ impl Default for PortalnetConfig {
 }
 
 pub const PROTOCOL: &str = "portal";
-pub const DEFAULT_DB_PATH: &str = "portal.db";
 
 #[derive(Clone)]
 pub struct PortalnetProtocol {
@@ -80,15 +78,6 @@ pub struct JsonRpcHandler {
 }
 
 impl JsonRpcHandler {
-    fn get_account(&self, params: Vec<String>) -> Account {
-        let trie = PortalTrie {
-            db_path: DEFAULT_DB_PATH.to_owned(),
-        };
-        let state_root = params.get(0).unwrap().to_string();
-        let account_address = params.get(1).unwrap().to_string();
-        trie.resolve_account(state_root, account_address).unwrap()
-    }
-
     pub async fn process_jsonrpc_requests(mut self) {
         while let Some(cmd) = self.jsonrpc_rx.recv().await {
             use PortalEndpointKind::*;
@@ -107,10 +96,6 @@ impl JsonRpcHandler {
                         .map(|node_id| Value::String(node_id.to_string()))
                         .collect();
                     let _ = cmd.resp.send(Ok(Value::Array(routing_table_info)));
-                }
-                EthGetBalance => {
-                    let account = self.get_account(cmd.params.unwrap());
-                    let _ = cmd.resp.send(Ok(serde_json::json!(account)));
                 }
             }
         }
