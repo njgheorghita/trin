@@ -22,6 +22,7 @@ struct JsonRequest {
     #[validate(custom = "validate_jsonrpc_version")]
     pub jsonrpc: String,
     pub method: String,
+    pub params: Option<Vec<Value>>,
     pub id: u32,
 }
 
@@ -219,7 +220,8 @@ fn handle_request(
             "result": "trin 0.0.1-alpha",
         })
         .to_string()),
-        _ if obj.method.as_str().starts_with("discv5") => dispatch_portal_request(obj, portal_tx),
+        "eth_getBalance" => dispatch_portal_request(obj, portal_tx, infura_url),
+        _ if obj.method.as_str().starts_with("discv5") => dispatch_portal_request(obj, portal_tx, infura_url),
         _ => dispatch_infura_request(obj, infura_url),
     }
 }
@@ -232,27 +234,63 @@ fn dispatch_infura_request(obj: JsonRequest, infura_url: &str) -> Result<String,
         Err(err) => Err(json!({
             "jsonrpc": "2.0",
             "id": obj.id,
+            "params": obj.params,
             "error": format!("Infura failure: {}", err.to_string()),
         })
         .to_string()),
     }
 }
 
+#[derive(Debug)]
+pub struct InfuraParams {
+    block: Value,
+    details: Value,
+}
+
 fn dispatch_portal_request(
     obj: JsonRequest,
     portal_tx: UnboundedSender<PortalEndpoint>,
+    infura_url: &str,
 ) -> Result<String, String> {
     let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
     let method = obj.method.as_str();
     let message = match method {
         "discv5_nodeInfo" => PortalEndpoint {
             kind: PortalEndpointKind::NodeInfo,
+            params: None,
             resp: resp_tx,
+            state_root: None,
         },
         "discv5_routingTableInfo" => PortalEndpoint {
             kind: PortalEndpointKind::RoutingTableInfo,
+            params: None,
             resp: resp_tx,
+            state_root: None,
         },
+        "eth_getBalance" => {
+            let mut infura_params: Vec<Value> = Vec::new();
+            infura_params.push(Value::String("latest".to_string()));
+            infura_params.push(Value::Bool(false));
+            let json_request = JsonRequest{
+                jsonrpc: "2.0".to_string(),
+                method: "eth_getBlockByNumber".to_string(),
+                params: Some(infura_params),
+                id: 10000,
+            };
+            let raw_block = dispatch_infura_request(json_request, infura_url).unwrap();
+            let deser: Value = serde_json::from_str(&raw_block).unwrap();
+            // remove 0x prefix
+            let mut state_root_chars = deser["result"]["stateRoot"].as_str().unwrap().chars();
+            state_root_chars.next();
+            state_root_chars.next();
+            let state_root = state_root_chars.as_str().to_string();
+            PortalEndpoint {
+                kind: PortalEndpointKind::EthGetBalance,
+                params: obj.params,
+                resp: resp_tx,
+                state_root: Some(state_root),
+            }
+        }
         _ => {
             return Err(json!({
                 "jsonrpc": "2.0",
@@ -326,6 +364,7 @@ mod test {
             jsonrpc: "2.0".to_string(),
             id: 1,
             method: "eth_blockNumber".to_string(),
+            params: None,
         };
         assert_eq!(request.validate(), Ok(()));
     }
@@ -336,6 +375,7 @@ mod test {
             jsonrpc: "1.0".to_string(),
             id: 1,
             method: "eth_blockNumber".to_string(),
+            params: None,
         };
         let errors = request.validate();
         assert!(ValidationErrors::has_error(&errors, "jsonrpc"));

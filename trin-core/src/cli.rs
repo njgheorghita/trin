@@ -18,6 +18,9 @@ const DEFAULT_DISCOVERY_PORT: &str = "9000";
     about = "Run an eth portal client"
 )]
 pub struct TrinConfig {
+    #[structopt(long = "fix-unclean-shutdown")]
+    fix_unclean_shutdown: bool,
+
     #[structopt(
     default_value = "ipc",
     possible_values(&["http", "ipc"]),
@@ -84,6 +87,7 @@ impl TrinConfig {
     pub fn new() -> Self {
         Self::new_from(env::args_os()).expect("Could not parse trin arguments")
     }
+
     pub fn new_from<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: Iterator<Item = T>,

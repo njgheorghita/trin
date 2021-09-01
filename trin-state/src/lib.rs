@@ -9,8 +9,11 @@ use trin_core::portalnet::protocol::{
     JsonRpcHandler, PortalEndpoint, PortalnetConfig, PortalnetProtocol,
 };
 
+pub mod types;
+
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Launching trin-state...");
+    println!("XXXXXXXXXXXXXXXXXXXXXXX");
 
     let trin_config = TrinConfig::new();
     trin_config.display_config();

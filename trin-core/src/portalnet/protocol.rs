@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::net::SocketAddr;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use discv5::{Discv5ConfigBuilder, Discv5Event, TalkRequest};
@@ -8,6 +9,13 @@ use log::{debug, error, warn};
 use rocksdb::{Options, DB};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use ssz_derive::{Decode, Encode};
+use ssz;
+use ssz::Encode;
+use discv5::enr::NodeId;
+use tiny_keccak::{Hasher, Keccak};
+use ethereum_types::Address;
+use hex;
 
 use crate::utils::get_data_dir;
 
@@ -28,12 +36,15 @@ type Responder<T, E> = mpsc::UnboundedSender<Result<T, E>>;
 pub enum PortalEndpointKind {
     NodeInfo,
     RoutingTableInfo,
+    EthGetBalance,
 }
 
 #[derive(Debug)]
 pub struct PortalEndpoint {
     pub kind: PortalEndpointKind,
+    pub params: Option<Vec<Value>>,
     pub resp: Responder<Value, String>,
+    pub state_root: Option<String>,
 }
 
 #[derive(Clone)]
@@ -77,6 +88,123 @@ pub struct JsonRpcHandler {
     pub jsonrpc_rx: mpsc::UnboundedReceiver<PortalEndpoint>,
 }
 
+
+#[derive()]
+pub struct AccountProof{
+    pub content_type: u8,
+    pub address: String,
+    pub state_root: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Encode, Decode)]
+pub struct AccountProofContainer{
+    pub address: CustomAddress,
+    pub state_root: [u8; 32],
+}
+
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct CustomAddress(Address);
+
+impl ssz::Encode for CustomAddress {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    //fn ssz_bytes_len(&self) -> usize {
+        //20
+    //}
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        // get rid of 0
+        buf.append(&mut self.0.as_bytes().to_vec());
+    }
+}
+
+impl ssz::Decode for CustomAddress {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    //fn ssz_bytes_len(&self) -> usize {
+        //20
+    //}
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        // this is broken likely
+        Ok(CustomAddress::new(Address::from_slice(bytes)))
+    }
+}
+
+impl CustomAddress {
+    pub fn new(address: Address) -> CustomAddress {
+        CustomAddress(address)
+    }
+}
+
+impl Deref for CustomAddress {
+    type Target = Address;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for CustomAddress {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+//impl ssz::Decode for Address {
+    //fn is_ssz_fixed_len() -> bool {
+        //true
+    //}
+
+    //fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        //let mut builder = ssz::SszDecoderBuilder::new(&bytes);
+        //builder.register_type::<Address>().unwrap();
+        //let mut decoder = builder.build()?;
+        //Ok(Self {
+            //bytes: decoder.decode_next()?,
+        //})
+    //}
+//}
+
+
+impl AccountProof{
+    // 0x02 | Container(address: bytes20, state_root: bytes32)
+    pub fn get_content_key(&self) -> Vec<u8> {
+        let mut content_key = [2u8].to_vec();
+        //let mut address_byte_array: [u8; 20] = Default::default();
+        let decoded_address = hex::decode(&self.address).unwrap();
+        //address_byte_array.copy_from_slice(&decoded_address[0..20]);
+
+        let mut state_root_byte_array: [u8; 32] = Default::default();
+        let decoded_state_root = hex::decode(&self.state_root).unwrap();
+        state_root_byte_array.copy_from_slice(&decoded_state_root[0..32]);
+
+        let bytes_address = CustomAddress::new(Address::from_slice(decoded_address.as_slice()));
+        let ssz_container = AccountProofContainer{
+            address: bytes_address,
+            state_root: state_root_byte_array,
+        };
+        content_key.append(&mut ssz_container.as_ssz_bytes());
+        content_key
+        //self.state_root.to_vec()
+    }
+
+    // content_id = keccak(address)
+    pub fn get_content_id(&self) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        let decoded_address = hex::decode(&self.address).unwrap();
+        hasher.update(decoded_address.as_slice());
+        hasher.finalize(&mut out);
+        out
+    }
+}
+
 impl JsonRpcHandler {
     pub async fn process_jsonrpc_requests(mut self) {
         while let Some(cmd) = self.jsonrpc_rx.recv().await {
@@ -96,6 +224,38 @@ impl JsonRpcHandler {
                         .map(|node_id| Value::String(node_id.to_string()))
                         .collect();
                     let _ = cmd.resp.send(Ok(Value::Array(routing_table_info)));
+                }
+                EthGetBalance => {
+                    // look up stateroot via header chain
+                    // ``` state_root = proxy_to_infura('latest state root')
+                    // start O(1) process and GND process (optional)
+                    // ``` dispatch_state_network_request('eth_getBalance', address, state_root, Arc<discovery>)
+                    // look up account proof by address
+                    // - generate content key
+                    // generate_account_trie_proof_content_key(address, state_root)
+                    let addr = cmd.params.clone().unwrap()[0].as_str().unwrap().to_string();
+                    let account_trie_proof = AccountProof{
+                        content_type: 2u8,
+                        address: addr,
+                        state_root: cmd.state_root.unwrap(),
+                    };
+                    let content_key = account_trie_proof.get_content_key();
+                    println!("content key: {:?}", content_key);
+                    let content_id = account_trie_proof.get_content_id();
+                    println!("content id: {:02X?}", content_id);
+                    // - check local db
+                    // portal_storage.get(content_id) // coming soon in pr
+
+                    // - find node from network
+                    let target_node_id = NodeId::new(&content_id);
+                    let nodes = self.discovery.discv5.find_node(target_node_id);
+                    // - req proof
+                    // for node in node:
+                    //     while not proof:
+                    //          proof = get_proof_from_node() 
+                    // - validate proof
+                    // - return proof
+                    let _ = cmd.resp.send(Ok(Value::String("100".to_string())));
                 }
             }
         }
