@@ -3,12 +3,17 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use trin_core::cli::TrinConfig;
+use trin_core::portalnet::discovery::Discovery;
 use trin_core::portalnet::protocol::{
     PortalnetConfig, PortalnetProtocol, StateEndpointKind, StateNetworkEndpoint,
 };
+use crate::jsonrpc::Params;
+pub mod protocol;
+use crate::protocol::{StatePortalProtocol, StateProtocolEvents};
 
 pub struct StateRequestHandler {
     pub state_rx: mpsc::UnboundedReceiver<StateNetworkEndpoint>,
+    pub protocol: StatePortalProtocol,
 }
 
 impl StateRequestHandler {
@@ -28,10 +33,13 @@ impl StateRequestHandler {
 }
 
 pub fn initialize(
+    discovery: Discovery,
+    portalnet_config: PortalnetConfig,
     state_rx: mpsc::UnboundedReceiver<StateNetworkEndpoint>,
-) -> Result<StateRequestHandler, Box<dyn std::error::Error>> {
-    let handler = StateRequestHandler { state_rx };
-    Ok(handler)
+) -> Result<(StateRequestHandler, StatePortalProtocol, StateProtocolEvents), Box<dyn std::error::Error>> {
+    let (mut p2p, events) = StatePortalProtocol::new(discovery, portalnet_config);
+    let handler = StateRequestHandler { state_rx, protocol: p2p};
+    Ok((handler, p2p, events))
 }
 
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {

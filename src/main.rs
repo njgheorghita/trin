@@ -87,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         tokio::spawn(events.process_discv5_requests());
+        //tokio::spawn(state_events.process_network_requests());
         tokio::spawn(rpc_handler.process_jsonrpc_requests());
         if let Some(handler) = state_handler {
             tokio::spawn(handler.handle_client_queries());
