@@ -1,33 +1,27 @@
-FROM rust
+FROM rust as builder
 
-RUN apt-get update 
+WORKDIR trin
 
-#
-# based on Rocksdb install.md:
-#
+RUN apt-get update && apt-get install clang -y
 
-# Upgrade your gcc to version at least 4.7 to get C++11 support.
-RUN apt-get install -y build-essential checkinstall
+COPY ./src ./src 
+COPY ./trin-core ./trin-core 
+COPY ./trin-history ./trin-history 
+COPY ./trin-state ./trin-state 
+COPY ./ethportal-peertest ./ethportal-peertest 
+COPY ./Cargo.lock ./Cargo.lock 
+COPY ./Cargo.toml ./Cargo.toml 
 
-# Install gflags
-RUN apt-get install -y libgflags-dev
+#RUN cargo build --release --bin trin
+RUN rustup component add rustfmt
+RUN cargo build --bin trin
 
-# Install snappy
-RUN apt-get install -y libsnappy-dev
+#FROM rust as runtime
+#WORKDIR trin
+#COPY --from=builder /trin/target/debug/trin /usr/local/bin
 
-# Install zlib
-RUN apt-get install -y zlib1g-dev
+#ENTRYPOINT ["./usr/local/bin/trin"]
+ENV RUST_LOG=debug
 
-# Install bzip2
-RUN apt-get install -y libbz2-dev
-
-# Clone rocksdb
-RUN cd /tmp && git clone https://github.com/facebook/rocksdb.git && cd rocksdb && make clean && make
-
-
-WORKDIR /usr/src/trin
-COPY . .
-
-RUN cargo install --path .
-
-CMD ["trin"]
+# good
+ENTRYPOINT ["./target/debug/trin"]

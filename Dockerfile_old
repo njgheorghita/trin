@@ -1,0 +1,61 @@
+## two docker images, one for bootnodes, one for experimental
+
+FROM rust
+
+#RUN apt-get update 
+RUN apt-get update && apt-get install clang -y
+
+#FROM rust:1.49 as build
+
+## create a new empty shell project
+RUN USER=root cargo new --bin trin
+WORKDIR /trin
+
+## copy over your manifests
+COPY ./Cargo.lock ./Cargo.lock
+COPY ./Cargo.toml ./Cargo.toml
+#COPY ./trin-core/Cargo.lock ./trin-core/Cargo.lock
+COPY ./trin-core/Cargo.toml ./trin-core/Cargo.toml
+#COPY ./trin-state/Cargo.lock ./trin-state/Cargo.lock
+COPY ./trin-state/Cargo.toml ./trin-state/Cargo.toml
+#COPY ./trin-history/Cargo.lock ./trin-history/Cargo.lock
+COPY ./trin-history/Cargo.toml ./trin-history/Cargo.toml
+#COPY ./ethportal-peertest/Cargo.lock ./ethportal-peertest/Cargo.lock
+#COPY ./ethportal-peertest/Cargo.toml ./ethportal-peertest/Cargo.toml
+
+## this build step will cache your dependencies
+RUN cargo build --release
+RUN rm src/*.rs
+
+## copy your source tree
+COPY ./src ./src
+
+## build for release
+RUN rm ./target/release/deps/trin*
+RUN cargo install --path .
+
+## our final base
+#FROM rust:1.49
+
+## copy the build artifact from the build stage
+#COPY --from=build /holodeck/target/release/holodeck .
+
+## set the startup command to run your binary
+#CMD ["./holodeck"]
+
+#WORKDIR /usr/src/trin
+#COPY ./Cargo.toml ./Cargo.toml
+#COPY ./ethportal-peertest ./ethportal-peertest
+#COPY ./trin-core ./trin-core
+#COPY ./trin-history ./trin-history
+#COPY ./trin-state ./trin-state
+#COPY ./src ./src
+#COPY ./README.md ./README.md
+
+
+#RUN cargo install --path .
+#RUN cargo install --release
+
+#ENV TRIN_INFURA_PROJECT_ID="xxx"
+
+CMD ["trin"]
