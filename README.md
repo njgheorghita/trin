@@ -37,7 +37,7 @@ functionality becomes available.
 ### Install dependencies (on Ubuntu/Debian)
 
 ```sh
-apt install libssl-dev librocksdb-dev libclang-dev 
+apt install libssl-dev librocksdb-dev libclang-dev cargo g++
 ```
 
 Create an Infura account, getting a project ID. Check out the trin repository, then:

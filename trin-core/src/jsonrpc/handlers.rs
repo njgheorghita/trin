@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
 use crate::jsonrpc::endpoints::{Discv5Endpoint, HistoryEndpoint, StateEndpoint, TrinEndpoint};
-use crate::jsonrpc::types::{HistoryJsonRpcRequest, PortalJsonRpcRequest, StateJsonRpcRequest};
+use crate::jsonrpc::types::{HistoryJsonRpcRequest, Params, PortalJsonRpcRequest, StateJsonRpcRequest};
 use crate::locks::RwLoggingExt;
 use crate::portalnet::discovery::Discovery;
 
@@ -34,11 +34,11 @@ impl JsonRpcHandler {
                     }
                 },
                 TrinEndpoint::HistoryEndpoint(endpoint) => match self.history_jsonrpc_tx.as_ref() {
-                    Some(tx) => proxy_query_to_history_subnet(tx, endpoint).await,
+                    Some(tx) => proxy_query_to_history_subnet(tx, endpoint, request.params).await,
                     None => Err("Chain history subnetwork unavailable.".to_string()),
                 },
                 TrinEndpoint::StateEndpoint(endpoint) => match self.state_jsonrpc_tx.as_ref() {
-                    Some(tx) => proxy_query_to_state_subnet(tx, endpoint).await,
+                    Some(tx) => proxy_query_to_state_subnet(tx, endpoint, request.params).await,
                     None => Err("State subnetwork unavailable.".to_string()),
                 },
                 _ => Err(format!(
@@ -54,10 +54,12 @@ impl JsonRpcHandler {
 async fn proxy_query_to_history_subnet(
     subnet_tx: &mpsc::UnboundedSender<HistoryJsonRpcRequest>,
     endpoint: HistoryEndpoint,
+    params: Params,
 ) -> Result<Value, String> {
     let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
     let message = HistoryJsonRpcRequest {
         endpoint,
+        params,
         resp: resp_tx,
     };
     let _ = subnet_tx.send(message);
@@ -76,10 +78,12 @@ async fn proxy_query_to_history_subnet(
 async fn proxy_query_to_state_subnet(
     subnet_tx: &mpsc::UnboundedSender<StateJsonRpcRequest>,
     endpoint: StateEndpoint,
+    params: Params,
 ) -> Result<Value, String> {
     let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
     let message = StateJsonRpcRequest {
         endpoint,
+        params,
         resp: resp_tx,
     };
     let _ = subnet_tx.send(message);

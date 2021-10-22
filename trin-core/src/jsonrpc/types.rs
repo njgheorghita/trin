@@ -1,8 +1,11 @@
-use crate::jsonrpc::endpoints::{HistoryEndpoint, StateEndpoint, TrinEndpoint};
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 use validator::{Validate, ValidationError};
+
+use crate::jsonrpc::endpoints::{HistoryEndpoint, StateEndpoint, TrinEndpoint};
 
 type Responder<T, E> = mpsc::UnboundedSender<Result<T, E>>;
 
@@ -42,6 +45,9 @@ pub struct JsonRequest {
 #[derive(Debug, Clone)]
 pub struct PortalJsonRpcRequest {
     pub endpoint: TrinEndpoint,
+    // todo: Deserialize / Serialize
+    //#[serde(default = "default_params")]
+    pub params: Params,
     pub resp: Responder<Value, String>,
 }
 
@@ -49,6 +55,9 @@ pub struct PortalJsonRpcRequest {
 #[derive(Debug)]
 pub struct HistoryJsonRpcRequest {
     pub endpoint: HistoryEndpoint,
+    // todo: Deserialize / Serialize
+    //#[serde(default = "default_params")]
+    pub params: Params,
     pub resp: Responder<Value, String>,
 }
 
@@ -56,6 +65,9 @@ pub struct HistoryJsonRpcRequest {
 #[derive(Debug)]
 pub struct StateJsonRpcRequest {
     pub endpoint: StateEndpoint,
+    // todo: Deserialize / Serialize
+    //#[serde(default = "default_params")]
+    pub params: Params,
     pub resp: Responder<Value, String>,
 }
 

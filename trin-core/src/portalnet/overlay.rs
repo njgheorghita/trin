@@ -1,5 +1,6 @@
 use crate::locks::RwLoggingExt;
 use crate::utils::distance::xor_two_values;
+use std::str;
 
 use super::{
     discovery::Discovery,
@@ -96,6 +97,28 @@ impl From<discv5::RequestError> for OverlayRequestError {
         }
     }
 }
+
+#[derive(Error, Debug)]
+pub enum PingError {
+    #[error("Empty response")]
+    Empty,
+
+    #[error("The request timed out")]
+    Timeout,
+
+    #[error("Internal error: ")]
+    Other(discv5::RequestError),
+}
+
+impl From<discv5::RequestError> for PingError {
+    fn from(err: discv5::RequestError) -> Self {
+        match err {
+            discv5::RequestError::Timeout => Self::Timeout,
+            err => Self::Other(err),
+        }
+    }
+}
+
 
 /// Overlay protocol is a layer on top of discv5 that handles all requests from the overlay networks
 /// (state, history etc.) and dispatch them to the discv5 protocol TalkReq. Each network should
@@ -312,6 +335,29 @@ impl OverlayProtocol {
             )
             .await?;
         Pong::try_from(&result)
+    }
+
+    pub async fn ping(
+        &self,
+        enr: Enr,
+        protocol: ProtocolKind,
+        payload: Option<Vec<u8>>,
+        // PingError
+        // return Pong?
+    ) -> Result<String, PingError>{
+        println!("sending ping");
+        let data_radius = self.data_radius.read().await;
+        let response_future = self.send_ping(*data_radius, enr, protocol, payload).await;
+        match response_future {
+            Ok(val) => {
+                match val.len() {
+                    0 => Err(PingError::Empty),
+                    _ => Ok(str::from_utf8(&val).unwrap().to_owned()),
+                }
+            }
+            // bad error msg
+            Err(msg) => Err(PingError::Empty),
+        }
     }
 
     pub async fn send_find_nodes(

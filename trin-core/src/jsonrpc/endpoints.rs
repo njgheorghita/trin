@@ -1,4 +1,6 @@
 use std::str::FromStr;
+use crate::portalnet::Enr;
+use super::types::Params;
 
 /// Discv5 JSON-RPC endpoints. Start with "discv5_" prefix
 #[derive(Debug, PartialEq, Clone)]
@@ -11,12 +13,34 @@ pub enum Discv5Endpoint {
 #[derive(Debug, PartialEq, Clone)]
 pub enum StateEndpoint {
     DataRadius,
+    //Ping
+}
+
+// conflicting name w/ portalnet/type?
+pub struct Ping {
+    pub enr: Enr,
+}
+
+impl Ping {
+    pub fn from_params(params: Params) -> Self {
+        let array = match params {
+            Params::None => panic!("fuck"),
+            Params::Map(_) => panic!("fuck"),
+            Params::Array(val) => val,
+        };
+        let enr_str = match array.len() {
+            1 => array[0].as_str().unwrap(),
+            _ => panic!("fuck"),
+        };
+        Ping { enr: Enr::from_str(enr_str).unwrap() }
+    }
 }
 
 /// History network JSON-RPC endpoints. Start with "portalHistory_" prefix
 #[derive(Debug, PartialEq, Clone)]
 pub enum HistoryEndpoint {
     DataRadius,
+    Ping,
 }
 
 /// Ethereum JSON-RPC endpoints not currently supported by portal network requests, proxied to Infura
@@ -52,9 +76,8 @@ impl FromStr for TrinEndpoint {
                 Discv5Endpoint::RoutingTableInfo,
             )),
             "eth_blockNumber" => Ok(TrinEndpoint::InfuraEndpoint(InfuraEndpoint::BlockNumber)),
-            "portalHistory_dataRadius" => {
-                Ok(TrinEndpoint::HistoryEndpoint(HistoryEndpoint::DataRadius))
-            }
+            "portalHistory_dataRadius" => Ok(TrinEndpoint::HistoryEndpoint(HistoryEndpoint::DataRadius)),
+            "portalHistory_ping" => Ok(TrinEndpoint::HistoryEndpoint(HistoryEndpoint::Ping)),
             "portalState_dataRadius" => Ok(TrinEndpoint::StateEndpoint(StateEndpoint::DataRadius)),
             _ => Err(()),
         }
