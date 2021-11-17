@@ -1,9 +1,12 @@
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+
+use serde_json::value::RawValue;
 use structopt::StructOpt;
 use thiserror::Error;
 
 use trin_core::cli::DEFAULT_WEB3_IPC_PATH;
+use trin_core::jsonrpc::types::Params;
 
 #[derive(StructOpt, Debug)]
 #[structopt(
@@ -22,29 +25,34 @@ struct Config {
 
     #[structopt(help = "e.g. discv5_routingTableInfo", required = true)]
     endpoint: String,
+
+    #[structopt(long, help = "params as string")]
+    params: String
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let Config { ipc, endpoint } = Config::from_args();
+    let Config { ipc, endpoint , params} = Config::from_args();
 
     eprintln!(
-        "Attempting RPC. endpoint={} file={}",
+        "Attempting RPC. endpoint={} params={} file={}",
         endpoint,
+        params,
         ipc.to_string_lossy()
     );
     let mut client = TrinClient::from_ipc(&ipc)?;
 
-    let req = client.build_request(endpoint.as_str());
+    let params = [jsonrpc::arg(params)];
+    let req = client.build_request(endpoint.as_str(), &params);
     let resp = client.make_request(req)?;
 
     println!("{}", serde_json::to_string_pretty(&resp).unwrap());
     Ok(())
 }
 
-fn build_request(method: &str, request_id: u64) -> jsonrpc::Request {
+fn build_request<'a>(method: &'a str, raw_params: &'a [Box<RawValue>], request_id: u64) -> jsonrpc::Request<'a> {
     jsonrpc::Request {
         method,
-        params: &[],
+        params: raw_params,
         id: serde_json::json!(request_id),
         jsonrpc: Some("2.0"),
     }
@@ -105,8 +113,8 @@ impl<'a, S> TrinClient<S>
 where
     S: std::io::Read + std::io::Write + TryClone,
 {
-    fn build_request(&mut self, method: &'a str) -> jsonrpc::Request<'a> {
-        let result = build_request(method, self.request_id);
+    fn build_request(&mut self, method: &'a str, params: &'a [Box<RawValue>]) -> jsonrpc::Request<'a> {
+        let result = build_request(method, params, self.request_id);
         self.request_id += 1;
 
         result
