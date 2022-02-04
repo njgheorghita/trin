@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
 
 use log::debug;
+use r2d2_sqlite::SqliteConnectionManager;
 use tokio::sync::{mpsc, RwLock};
 
 use trin_core::jsonrpc::handlers::JsonRpcHandler;
@@ -58,13 +60,13 @@ pub async fn run_trin(
     // Initialize DB config
     let node_id = discovery.local_enr().node_id();
     let rocks_db = PortalStorage::setup_rocksdb(node_id).unwrap();
-    let meta_db = PortalStorage::setup_sqlite(node_id).unwrap();
+    let pool = PortalStorage::setup_sqlite(node_id).unwrap();
     let storage_config = PortalStorageConfig {
         storage_capacity_kb: (trin_config.kb / 4) as u64,
         node_id,
         distance_function: DistanceFunction::Xor,
         db: Arc::new(rocks_db),
-        meta_db: Arc::new(meta_db),
+        meta_db: pool,
     };
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);

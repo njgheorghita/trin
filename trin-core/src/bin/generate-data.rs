@@ -42,7 +42,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         node_id,
         distance_function: DistanceFunction::Xor,
         db: Arc::new(db),
-        meta_db: Arc::new(meta_db),
+        meta_db,
     };
     let mut storage = PortalStorage::new(storage_config)?;
 

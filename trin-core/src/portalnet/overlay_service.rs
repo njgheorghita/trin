@@ -282,6 +282,7 @@ impl OverlayService {
         };
 
         let (response_tx, response_rx) = mpsc::unbounded_channel();
+        let storage = storage.clone();
 
         tokio::spawn(async move {
             let mut service = Self {
@@ -1092,7 +1093,7 @@ mod tests {
             node_id,
             distance_function: DistanceFunction::Xor,
             db: Arc::new(rocks_db),
-            meta_db: Arc::new(meta_db),
+            meta_db,
         };
         let storage = Arc::new(PortalStorage::new(storage_config).unwrap());
 

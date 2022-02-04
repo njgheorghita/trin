@@ -64,13 +64,13 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize DB config
     let node_id = discovery.local_enr().node_id();
     let rocks_db = PortalStorage::setup_rocksdb(node_id).unwrap();
-    let meta_db = PortalStorage::setup_sqlite(node_id).unwrap();
+    let pool = PortalStorage::setup_sqlite(node_id).unwrap();
     let storage_config = PortalStorageConfig {
         storage_capacity_kb: (trin_config.kb / 4) as u64,
         node_id,
         distance_function: DistanceFunction::Xor,
         db: Arc::new(rocks_db),
-        meta_db: Arc::new(meta_db),
+        meta_db: pool,
     };
 
     // Spawn main event handler
