@@ -1,5 +1,4 @@
 use anyhow::anyhow;
-use bytes::Bytes;
 use ethereum_types::{Bloom, H160, H256, U256};
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use serde::{Serialize, Serializer};

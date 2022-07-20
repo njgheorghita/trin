@@ -718,11 +718,7 @@ mod test {
         let epoch_hash =
             hex::decode("e242814b90ed3950e13aac7e56ce116540c71b41d1516605aada26c6c07cc491")
                 .unwrap();
-<<<<<<< HEAD
         let expected_content_key_encoding =
-=======
-        let expected_content_key =
->>>>>>> 687a33d (Basic accumulator types)
             hex::decode("03e242814b90ed3950e13aac7e56ce116540c71b41d1516605aada26c6c07cc491")
                 .unwrap();
         let expected_content_id =
@@ -734,19 +730,11 @@ mod test {
         });
         assert_eq!(&content_key.content_id().to_vec(), expected_content_id);
 
-<<<<<<< HEAD
         let encoded_content_key: Vec<u8> = content_key.clone().into();
         assert_eq!(encoded_content_key, expected_content_key_encoding);
 
         // round trip
         let decoded = HistoryContentKey::try_from(encoded_content_key).unwrap();
-=======
-        let actual_content_key: Vec<u8> = content_key.clone().into();
-        assert_eq!(actual_content_key, expected_content_key);
-
-        // round trip
-        let decoded = HistoryContentKey::try_from(actual_content_key).unwrap();
->>>>>>> 687a33d (Basic accumulator types)
         assert_eq!(decoded, content_key);
     }
 
@@ -755,29 +743,17 @@ mod test {
         let expected_content_id =
             &hex::decode("c0ba8a33ac67f44abff5984dfbb6f56c46b880ac2b86e1f23e7fa9c402c53ae7")
                 .unwrap();
-<<<<<<< HEAD
         let expected_content_key_encoding = hex::decode("0400").unwrap();
-=======
-        let expected_content_key = hex::decode("0400").unwrap();
->>>>>>> 687a33d (Basic accumulator types)
 
         let content_key =
             HistoryContentKey::MasterAccumulator(MasterAccumulator::Latest(SszNone::new()));
         assert_eq!(&content_key.content_id().to_vec(), expected_content_id);
 
-<<<<<<< HEAD
         let encoded_content_key: Vec<u8> = content_key.clone().into();
         assert_eq!(encoded_content_key, expected_content_key_encoding);
 
         // round trip
         let decoded = HistoryContentKey::try_from(encoded_content_key).unwrap();
-=======
-        let actual_content_key: Vec<u8> = content_key.clone().into();
-        assert_eq!(actual_content_key, expected_content_key);
-
-        // round trip
-        let decoded = HistoryContentKey::try_from(actual_content_key).unwrap();
->>>>>>> 687a33d (Basic accumulator types)
         assert_eq!(decoded, content_key);
     }
 
@@ -786,11 +762,7 @@ mod test {
         let expected_content_id =
             &hex::decode("af75c3c9d0e89a5083361a3334a9c5583955f0dbe9a413eb79ba26400d1824a6")
                 .unwrap();
-<<<<<<< HEAD
         let expected_content_key_encoding =
-=======
-        let expected_content_key =
->>>>>>> 687a33d (Basic accumulator types)
             hex::decode("040188cce8439ebc0c1d007177ffb6831c15c07b4361984cc52235b6fd728434f0c7")
                 .unwrap();
         let master_hash = H256::from_slice(
@@ -801,19 +773,11 @@ mod test {
             HistoryContentKey::MasterAccumulator(MasterAccumulator::MasterHash(master_hash));
         assert_eq!(&content_key.content_id().to_vec(), expected_content_id);
 
-<<<<<<< HEAD
         let encoded_content_key: Vec<u8> = content_key.clone().into();
         assert_eq!(encoded_content_key, expected_content_key_encoding);
 
         // round trip
         let decoded = HistoryContentKey::try_from(encoded_content_key).unwrap();
-=======
-        let actual_content_key: Vec<u8> = content_key.clone().into();
-        assert_eq!(actual_content_key, expected_content_key);
-
-        // round trip
-        let decoded = HistoryContentKey::try_from(actual_content_key).unwrap();
->>>>>>> 687a33d (Basic accumulator types)
         assert_eq!(decoded, content_key);
     }
 }

@@ -24,6 +24,7 @@ type HeaderRecordList = VariableList<HeaderRecord, typenum::U131072>;
 /// SSZ Container
 /// Primary datatype used to maintain record of historical and current epoch.
 /// Verifies canonical-ness of a given header.
+
 #[derive(Clone, Debug, Decode, Encode, TreeHash)]
 pub struct MasterAccumulator {
     historical_epochs: HistoricalEpochs,
