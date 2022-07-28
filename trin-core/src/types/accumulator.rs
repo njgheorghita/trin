@@ -117,6 +117,7 @@ impl TreeHash for HistoricalEpochs {
         // When generating the hash root of a list of composite objects, the complete procedure is here:
         // https://github.com/ethereum/py-ssz/blob/36f3406f814a5e5f4efb059a6928afc2d9d253b4/ssz/sedes/list.py#L113-L129
         // Since we know each element is a composite object, we can simplify the python by removing some branches, to:
+        // how to calculate tree hash root for list of composite objects according to ssz spec
         // mix_in_length(merkleize([hash_tree_root(element) for element in value], limit=chunk_count(type)), len(value))
         let hash_tree_roots: Vec<tree_hash::Hash256> = self
             .epochs
@@ -160,6 +161,7 @@ impl TreeHash for EpochAccumulator {
         // When generating the hash root of a list of composite objects, the complete procedure is here:
         // https://github.com/ethereum/py-ssz/blob/36f3406f814a5e5f4efb059a6928afc2d9d253b4/ssz/sedes/list.py#L113-L129
         // Since we know each element is a composite object, we can simplify the python by removing some branches, to:
+        // how to calculate tree hash root for list of composite objects according to ssz spec
         // mix_in_length(merkleize([hash_tree_root(element) for element in value], limit=chunk_count(type)), len(value))
         let hash_tree_roots: Vec<tree_hash::Hash256> = self
             .header_records
