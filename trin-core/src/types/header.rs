@@ -202,12 +202,6 @@ fn try_value_into_u64_be_bytes(val: &Value) -> anyhow::Result<Bytes> {
 impl Decodable for Header {
     /// Attempt to decode a header from RLP bytes.
     fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        // decode raw big-endian encoded bytes for nonce
-        let mut nonce: [u8; 8] = Default::default();
-        let raw_nonce: Vec<u8> = rlp.val_at(14)?;
-        nonce.copy_from_slice(&raw_nonce[..]);
-        let nonce = u64::from_be_bytes(nonce);
-
         let mut header = Header {
             parent_hash: rlp.val_at(0)?,
             uncles_hash: rlp.val_at(1)?,
@@ -223,7 +217,7 @@ impl Decodable for Header {
             timestamp: rlp.val_at(11)?,
             extra_data: rlp.val_at(12)?,
             mix_hash: Some(rlp.val_at(13)?),
-            nonce: Some(nonce),
+            nonce: Some(rlp.val_at(14)?),
             base_fee_per_gas: None,
         };
 
