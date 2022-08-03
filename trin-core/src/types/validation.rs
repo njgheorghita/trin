@@ -23,7 +23,6 @@ pub struct HeaderOracle {
     // individual channel. But my sense is that this will be more useful in terms of
     // determining which subnetworks are actually available.
     pub history_jsonrpc_tx: Option<tokio::sync::mpsc::UnboundedSender<HistoryJsonRpcRequest>>,
-    pub header_gossip_jsonrpc_tx: Option<bool>,
     pub block_indices_jsonrpc_tx: Option<bool>,
     pub state_jsonrpc_tx: Option<bool>,
 }
@@ -33,7 +32,6 @@ impl Default for HeaderOracle {
         Self {
             infura_url: INFURA_BASE_URL.to_string(),
             history_jsonrpc_tx: None,
-            header_gossip_jsonrpc_tx: None,
             block_indices_jsonrpc_tx: None,
             state_jsonrpc_tx: None,
         }
@@ -43,7 +41,7 @@ impl Default for HeaderOracle {
 impl HeaderOracle {
     // Currently falls back to infura, to be updated to use canonical block indices network.
     pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<String> {
-        let hex_number = format!("0x:{:02X}", block_number);
+        let hex_number = format!("0x{:02X}", block_number);
         let request = JsonRequest {
             jsonrpc: "2.0".to_string(),
             params: Params::Array(vec![json!(hex_number), json!(false)]),
