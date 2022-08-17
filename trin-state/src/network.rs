@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use discv5::enr::NodeId;
 use eth_trie::EthTrie;
@@ -34,6 +34,7 @@ impl StateNetwork {
         utp_listener_tx: UnboundedSender<UtpListenerRequest>,
         storage_config: PortalStorageConfig,
         portal_config: PortalnetConfig,
+        header_oracle: Arc<StdRwLock<HeaderOracle>>
     ) -> Self {
         // todo: revisit triedb location
         let db = PortalStorage::setup_rocksdb(NodeId::random()).unwrap();
@@ -42,7 +43,7 @@ impl StateNetwork {
 
         let storage = Arc::new(RwLock::new(PortalStorage::new(storage_config).unwrap()));
         let validator = Arc::new(StateValidator {
-            header_oracle: HeaderOracle::default(),
+            header_oracle,
         });
         let config = OverlayConfig {
             bootnode_enrs: portal_config.bootnode_enrs.clone(),

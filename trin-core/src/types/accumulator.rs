@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use ethereum_types::U256;
+use rocksdb::DB;
 use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
@@ -13,7 +15,7 @@ use crate::portalnet::types::content_key::HistoryContentKey;
 use crate::types::header::Header;
 
 /// Number of blocks / epoch
-const EPOCH_SIZE: usize = 8192;
+pub const EPOCH_SIZE: usize = 8192;
 
 /// Max number of epochs - 2 ** 17
 const MAX_HISTORICAL_EPOCHS: usize = 131072;
@@ -26,27 +28,41 @@ type HistoricalEpochsList = VariableList<tree_hash::Hash256, typenum::U8192>;
 /// List of (block_number, block_hash) for each header in the current epoch.
 type HeaderRecordList = VariableList<HeaderRecord, typenum::U131072>;
 
+
+#[derive(Debug)]
+pub struct AccumulatorDB {
+    pub db: DB,
+}
+
+impl AccumulatorDB {
+    // todo: store only latest 256 epoch accumulators
+
+    pub fn get_latest_master(&self) -> MasterAccumulator {
+        let latest_master_key: Vec<u8> = "LATEST_MASTER_ACCUMULATOR".as_bytes().to_vec();
+        match self.db.get(latest_master_key).unwrap() {
+            Some(val) => MasterAccumulator::from_ssz_bytes(&val).unwrap(),
+            None => MasterAccumulator::default()
+        }
+    }
+}
+
 /// SSZ Container
 /// Primary datatype used to maintain record of historical and current epoch.
 /// Verifies canonical-ness of a given header.
 #[derive(Clone, Debug, Decode, Encode, TreeHash)]
 pub struct MasterAccumulator {
-    historical_epochs: HistoricalEpochs,
-    current_epoch: EpochAccumulator,
+    pub historical_epochs: HistoricalEpochs,
+    pub current_epoch: EpochAccumulator,
 }
 
 // todo: remove dead-code exception as MasterAccumulator is connected to HeaderOracle
 #[allow(dead_code)]
 impl MasterAccumulator {
-    fn new() -> Self {
-        Self {
-            historical_epochs: HistoricalEpochs {
-                epochs: HistoricalEpochsList::empty(),
-            },
-            current_epoch: EpochAccumulator {
-                header_records: HeaderRecordList::empty(),
-            },
-        }
+    pub fn init() -> Self {
+        // build from db
+        // request from peer
+        // start process that requests new headers
+        Self::default()
     }
 
     /// Update the master accumulator state with a new header.
@@ -55,10 +71,10 @@ impl MasterAccumulator {
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    fn update_accumulator(
+    pub fn update_accumulator(
         &mut self,
         new_block_header: &Header,
-        epoch_accumulator_db: &mut HashMap<Vec<u8>, Vec<u8>>,
+        accumulator_db: Arc<AccumulatorDB>,
     ) {
         // get the previous total difficulty
         let last_total_difficulty = match self.current_epoch.header_records.len() {
@@ -87,10 +103,10 @@ impl MasterAccumulator {
             // this is currently a stub db to mock the functionality of...
             // - a persistent db that will store the latest XXX epoch accumulators
             // - a channel to request a specific epoch accumulator from the chain history network
-            let epoch_accumulator_key =
+            let epoch_accumulator_key: Vec<u8> =
                 HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash }).into();
             let epoch_accumulator_value = self.current_epoch.as_ssz_bytes();
-            epoch_accumulator_db.insert(epoch_accumulator_key, epoch_accumulator_value);
+            accumulator_db.db.put(epoch_accumulator_key, epoch_accumulator_value).unwrap();
 
             // initialize a new empty epoch
             self.current_epoch = EpochAccumulator {
@@ -109,15 +125,19 @@ impl MasterAccumulator {
             .expect("Invalid accumulator state, more current epochs than allowed.");
     }
 
-    fn historical_header_count(&self) -> u64 {
+    pub fn historical_header_count(&self) -> u64 {
         self.historical_epochs.epochs.len() as u64 * EPOCH_SIZE as u64
     }
 
-    fn get_epoch_index(&self, header_number: &u64) -> u64 {
+    pub fn get_epoch_index(&self, header_number: &u64) -> u64 {
         header_number / EPOCH_SIZE as u64
     }
 
-    fn header_in_current_epoch(&self, header_number: &u64) -> bool {
+    pub fn current_height(&self) -> u64 {
+        self.historical_header_count() + (self.current_epoch.header_records.len() as u64)
+    }
+
+    pub fn header_in_current_epoch(&self, header_number: &u64) -> bool {
         let current_epoch_block_min = match self.historical_header_count() {
             0 => match header_number {
                 0u64 => return true,
@@ -127,6 +147,19 @@ impl MasterAccumulator {
         };
         header_number > &current_epoch_block_min
             && header_number <= &(current_epoch_block_min + EPOCH_SIZE as u64)
+    }
+}
+
+impl Default for MasterAccumulator {
+    fn default() -> Self {
+        Self {
+            historical_epochs: HistoricalEpochs {
+                epochs: HistoricalEpochsList::empty(),
+            },
+            current_epoch: EpochAccumulator {
+                header_records: HeaderRecordList::empty(),
+            },
+        }
     }
 }
 
@@ -169,7 +202,7 @@ fn _is_header_canonical(
 /// for epoch accumulators preceding the current epoch.
 #[derive(Clone, Debug, Decode, Encode)]
 pub struct HistoricalEpochs {
-    epochs: HistoricalEpochsList,
+    pub epochs: HistoricalEpochsList,
 }
 
 impl TreeHash for HistoricalEpochs {
@@ -212,7 +245,7 @@ impl TreeHash for HistoricalEpochs {
 /// of all header records within an epoch.
 #[derive(Clone, Debug, Decode, Encode)]
 pub struct EpochAccumulator {
-    header_records: HeaderRecordList,
+    pub header_records: HeaderRecordList,
 }
 
 impl TreeHash for EpochAccumulator {
@@ -258,7 +291,7 @@ impl TreeHash for EpochAccumulator {
 /// Every HeaderRecord is 64bytes.
 #[derive(Debug, Decode, Encode, Clone, Copy, TreeHash)]
 pub struct HeaderRecord {
-    block_hash: tree_hash::Hash256,
+    pub block_hash: tree_hash::Hash256,
     total_difficulty: U256,
 }
 
@@ -289,7 +322,7 @@ mod test {
             hex::decode("88cce8439ebc0c1d007177ffb6831c15c07b4361984cc52235b6fd728434f0c7")
                 .unwrap(),
         ];
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         headers
             .iter()
             .zip(hash_tree_roots)
@@ -349,7 +382,7 @@ mod test {
             ((epoch_size * 4) + 1, false, 4),
         ];
         let amount = 25000;
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         for i in 0..amount {
             let header = generate_mock_header(i);
             master_accumulator.update_accumulator(&header, &mut epoch_accumulator_db);
@@ -383,7 +416,7 @@ mod test {
             EPOCH_SIZE * 3,
             EPOCH_SIZE * 3 + 1,
         ];
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         let mut headers: Vec<Header> = vec![];
         for i in 0..amount {
             let header = generate_mock_header(i);
@@ -414,7 +447,7 @@ mod test {
             EPOCH_SIZE + 1,
             EPOCH_SIZE * 2 - 1,
         ];
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         let mut headers: Vec<Header> = vec![];
         for i in 0..amount {
             let header = generate_mock_header(i);
@@ -439,7 +472,7 @@ mod test {
         let mut epoch_accumulator_db: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
         let amount = 10000;
         let headers_to_test = vec![amount, amount + 1, amount + 100];
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         let mut headers: Vec<Header> = vec![];
         for i in 0..amount {
             let header = generate_mock_header(i);

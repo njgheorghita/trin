@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use async_trait::async_trait;
 
 use trin_core::{
@@ -6,7 +8,7 @@ use trin_core::{
 };
 
 pub struct StateValidator {
-    pub header_oracle: HeaderOracle,
+    pub header_oracle: Arc<RwLock<HeaderOracle>>,
 }
 
 #[async_trait]

@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use log::debug;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use trin_core::utils::db::setup_temp_dir;
@@ -21,6 +22,24 @@ use trin_core::{
 };
 use trin_history::initialize_history_network;
 use trin_state::initialize_state_network;
+
+
+//
+//
+// finish milestone issues
+// fix testnet
+// can we use consensus clients to validate headers? rather than building out the accumulator
+// structure?
+//
+// blogpost- 
+//
+// - can we whip up a private infura ...
+//  - for our bootnodes / bridge nodes / testnet nodes
+//
+// get merge block
+// - make sure utp is being used
+// - maybe menubar app?
+//
 
 pub async fn run_trin(
     trin_config: TrinConfig,
@@ -63,10 +82,12 @@ pub async fn run_trin(
         PortalStorage::setup_config(discovery.local_enr().node_id(), trin_config.kb)?;
 
     // Initialize validation oracle
-    let header_oracle = Arc::new(RwLock::new(HeaderOracle {
-        infura_url: infura_url.clone(),
-        ..HeaderOracle::default()
-    }));
+    let header_oracle = Arc::new(RwLock::new(HeaderOracle::init(infura_url.clone(), storage_config.node_id)));
+    let header_oracle_clone = header_oracle.clone();
+    tokio::spawn(async move { 
+        let xxx = header_oracle_clone.write().unwrap();
+        xxx.build_master_accumulator().await 
+    });
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);
     // Initialize state sub-network service and event handlers, if selected
@@ -77,6 +98,7 @@ pub async fn run_trin(
                 utp_listener_tx.clone(),
                 portalnet_config.clone(),
                 storage_config.clone(),
+                header_oracle.clone(),
             )
             .await
         } else {
