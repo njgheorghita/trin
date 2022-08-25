@@ -23,6 +23,7 @@ pub enum StateEndpoint {
 /// History network JSON-RPC endpoints. Start with "portalHistory_" prefix
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum HistoryEndpoint {
+    // Public endpoints (exposed over user-facing jsonrpc server)
     DataRadius,
     FindContent,
     FindNodes,
@@ -33,6 +34,8 @@ pub enum HistoryEndpoint {
     RecursiveFindContent,
     Store,
     RoutingTableInfo,
+    // Private endpoints (not exposed over user-facing jsonrpc server)
+    SampleLatestMasterAccumulator,
 }
 
 /// Ethereum JSON-RPC endpoints not currently supported by portal network requests, proxied to Infura

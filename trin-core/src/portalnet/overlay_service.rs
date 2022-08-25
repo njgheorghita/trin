@@ -852,6 +852,7 @@ where
         self.metrics
             .as_ref()
             .and_then(|m| Some(m.report_inbound_find_content()));
+
         let content_key = match (TContentKey::try_from)(request.content_key) {
             Ok(key) => key,
             Err(_) => {

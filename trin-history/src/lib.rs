@@ -3,13 +3,13 @@ mod jsonrpc;
 pub mod network;
 pub mod validation;
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use discv5::TalkRequest;
 use log::info;
 use network::HistoryNetwork;
 use tokio::{
-    sync::{mpsc, mpsc::UnboundedSender},
+    sync::{mpsc, mpsc::UnboundedSender, RwLock},
     task::JoinHandle,
 };
 
@@ -44,7 +44,7 @@ pub async fn initialize_history_network(
 ) {
     let (history_jsonrpc_tx, history_jsonrpc_rx) =
         mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
-    header_oracle.write().unwrap().history_jsonrpc_tx = Some(history_jsonrpc_tx.clone());
+    header_oracle.write().await.history_jsonrpc_tx = Some(history_jsonrpc_tx.clone());
     let (history_event_tx, history_event_rx) = mpsc::unbounded_channel::<TalkRequest>();
     let (utp_history_tx, utp_history_rx) = mpsc::unbounded_channel::<UtpListenerEvent>();
     let history_network = HistoryNetwork::new(

@@ -1,4 +1,5 @@
 use ethereum_types::U256;
+use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
@@ -24,7 +25,7 @@ type HeaderRecordList = VariableList<HeaderRecord, typenum::U131072>;
 /// SSZ Container
 /// Primary datatype used to maintain record of historical and current epoch.
 /// Verifies canonical-ness of a given header.
-#[derive(Clone, Debug, Decode, Encode, TreeHash)]
+#[derive(Clone, Debug, Decode, Encode, Deserialize, Serialize, TreeHash)]
 pub struct MasterAccumulator {
     historical_epochs: HistoricalEpochs,
     current_epoch: EpochAccumulator,
@@ -33,15 +34,9 @@ pub struct MasterAccumulator {
 // todo: remove dead-code exception as MasterAccumulator is connected to HeaderOracle
 #[allow(dead_code)]
 impl MasterAccumulator {
-    fn new() -> Self {
-        Self {
-            historical_epochs: HistoricalEpochs {
-                epochs: HistoricalEpochsList::empty(),
-            },
-            current_epoch: EpochAccumulator {
-                header_records: HeaderRecordList::empty(),
-            },
-        }
+    pub fn latest_height(&self) -> u64 {
+        let historical_height = self.historical_epochs.epochs.len() as u64 * EPOCH_SIZE as u64;
+        historical_height + self.current_epoch.header_records.len() as u64
     }
 
     /// Update the master accumulator state with a new header.
@@ -91,9 +86,22 @@ impl MasterAccumulator {
     }
 }
 
+impl Default for MasterAccumulator {
+    fn default() -> Self {
+        Self {
+            historical_epochs: HistoricalEpochs {
+                epochs: HistoricalEpochsList::empty(),
+            },
+            current_epoch: EpochAccumulator {
+                header_records: HeaderRecordList::empty(),
+            },
+        }
+    }
+}
+
 /// Datatype responsible for storing all of the merkle roots
 /// for epoch accumulators preceding the current epoch.
-#[derive(Clone, Debug, Decode, Encode)]
+#[derive(Clone, Debug, Decode, Encode, Deserialize, Serialize)]
 pub struct HistoricalEpochs {
     epochs: HistoricalEpochsList,
 }
@@ -136,7 +144,7 @@ impl TreeHash for HistoricalEpochs {
 
 /// Data type responsible for maintaining a store
 /// of all header records within an epoch.
-#[derive(Clone, Debug, Decode, Encode)]
+#[derive(Clone, Debug, Decode, Encode, Deserialize, Serialize)]
 pub struct EpochAccumulator {
     header_records: HeaderRecordList,
 }
@@ -182,7 +190,7 @@ impl TreeHash for EpochAccumulator {
 /// Block hash and total difficulty are used to validate whether
 /// a header is canonical or not.
 /// Every HeaderRecord is 64bytes.
-#[derive(Debug, Decode, Encode, Clone, Copy, TreeHash)]
+#[derive(Debug, Decode, Encode, Clone, Copy, Deserialize, Serialize, TreeHash)]
 pub struct HeaderRecord {
     block_hash: tree_hash::Hash256,
     total_difficulty: U256,
@@ -214,7 +222,7 @@ mod test {
             hex::decode("88cce8439ebc0c1d007177ffb6831c15c07b4361984cc52235b6fd728434f0c7")
                 .unwrap(),
         ];
-        let mut master_accumulator = MasterAccumulator::new();
+        let mut master_accumulator = MasterAccumulator::default();
         headers
             .iter()
             .zip(hash_tree_roots)
