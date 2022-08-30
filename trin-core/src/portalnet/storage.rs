@@ -150,7 +150,7 @@ impl PortalStorage {
     pub fn should_store(&self, key: &impl OverlayContentKey) -> Result<bool, PortalStorageError> {
         let content_id = key.content_id();
 
-        // always store a master accumulator
+        // Always store a master accumulator
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
             return Ok(true);
         }
@@ -196,23 +196,18 @@ impl PortalStorage {
         let content_id = key.content_id();
         let distance_to_content_id = self.distance_to_content_id(&content_id);
 
-        // always store master accumulators in accumulator db
-        // duplicating storage of acc's over both dbs (if within radius)
+        // Always store master accumulators in accumulator db
+        // todo: add logic to accumulator_db to only overwrite if new macc is longer
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
             self.accumulator_db.put(&content_id, value)?;
-        }
-
-        // Check whether data is outside our radius.
-        if distance_to_content_id > self.data_radius && content_id != LATEST_MASTER_ACC_CONTENT_ID {
+        } else if distance_to_content_id > self.data_radius {
+            // Return Err if non-macc content is outside radius
             debug!("Not storing: {:02X?}", key.clone().into());
             return Err(PortalStorageError::OutsideDistanceError);
         }
 
-        // Store the data. if within radius
-        if distance_to_content_id <= self.data_radius {
-            self.db_insert(&content_id, value)?;
-        }
-
+        // Store the data in radius db
+        self.db_insert(&content_id, value)?;
         // Revert rocks db action if there's an error with writing to metadata db
         if let Err(msg) = self.meta_db_insert(&content_id, &key.clone().into(), value) {
             debug!(
@@ -473,7 +468,7 @@ impl PortalStorage {
         Ok(PortalStorageConfig::new(storage_capacity_kb, node_id))
     }
 
-    /// Helper function for opening a RocksDB connection.
+    /// Helper function for opening a RocksDB connection for the accumulatordb.
     /// Used for testing.
     pub fn setup_accumulatordb(node_id: NodeId) -> Result<rocksdb::DB, PortalStorageError> {
         let mut data_path: PathBuf = get_data_dir(node_id);
@@ -485,7 +480,7 @@ impl PortalStorage {
         Ok(DB::open(&db_opts, data_path)?)
     }
 
-    /// Helper function for opening a RocksDB connection.
+    /// Helper function for opening a RocksDB connection for the radius-constrained db.
     /// Used for testing.
     pub fn setup_rocksdb(node_id: NodeId) -> Result<rocksdb::DB, PortalStorageError> {
         let mut data_path: PathBuf = get_data_dir(node_id);
@@ -635,7 +630,7 @@ pub mod test {
 
     #[test_log::test(tokio::test)]
     #[serial]
-    async fn test_get_master_accumulator_from_accumulator_db() -> Result<(), PortalStorageError> {
+    async fn get_master_accumulator_from_accumulator_db() -> Result<(), PortalStorageError> {
         let temp_dir = setup_temp_dir();
 
         let node_id = NodeId::random();
@@ -654,7 +649,7 @@ pub mod test {
 
         // fill up data storage until master accumulator is outside radius
         while storage.distance_to_content_id(&master_accumulator_content_key.content_id())
-            < storage.data_radius
+            <= storage.data_radius
         {
             let content_key = generate_random_content_key();
             let value: Vec<u8> = "abcdefghijklmnopqrstuvwxyz1234567890".into();
@@ -669,6 +664,7 @@ pub mod test {
             .unwrap();
         assert_eq!(result, master_accumulator_value);
 
+        std::mem::drop(storage);
         temp_dir.close()?;
         Ok(())
     }

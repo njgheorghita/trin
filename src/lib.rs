@@ -132,13 +132,6 @@ pub async fn run_trin(
         history_jsonrpc_tx,
     };
 
-    // Spawn task to bootstrap our header accumulator
-    // Once it's within the threshold, start the process to follow chain head
-    tokio::spawn(async move {
-        header_oracle.write().await.init().await;
-        // todo: header_oracle.follow_head();
-    });
-
     tokio::spawn(rpc_handler.process_jsonrpc_requests());
 
     if let Some(handler) = state_handler {
@@ -169,6 +162,15 @@ pub async fn run_trin(
     if let Some(network) = state_network_task {
         tokio::spawn(async { network.await });
     }
+
+    // Spawn task to
+    // - bootstrap our header oracle's master accumulator
+    // - follow the head of the blockchain (via geth now / hg network later) & update macc
+    tokio::spawn(async move {
+        let mut lock = header_oracle.write().await;
+        lock.bootstrap().await;
+        // todo: lock.follow_head().await;
+    });
 
     let _ = live_server_rx.recv().await;
     live_server_rx.close();

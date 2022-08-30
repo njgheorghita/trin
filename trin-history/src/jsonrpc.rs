@@ -254,25 +254,28 @@ impl HistoryRequestHandler {
                         .choose_multiple(&mut rand::thread_rng(), 10)
                         .cloned()
                         .collect();
-                    let mut accumulators: Vec<Vec<u8>> = vec![];
+                    let mut accumulators: Vec<MasterAccumulator> = vec![];
+                    let content_key: Vec<u8> = HistoryContentKey::MasterAccumulator(
+                        MasterAccumulatorKey::Latest(SszNone::new()),
+                    )
+                    .into();
                     for enr in bucket_entries {
-                        let content_key = HistoryContentKey::MasterAccumulator(
-                            MasterAccumulatorKey::Latest(SszNone::new()),
-                        );
                         if let Ok(Content::Content(content)) = self
                             .network
                             .overlay
-                            .send_find_content(enr, content_key.into())
+                            .send_find_content(enr, content_key.clone())
                             .await
                         {
-                            accumulators.push(content.into())
+                            let content: Vec<u8> = content.into();
+                            if let Ok(acc) = MasterAccumulator::from_ssz_bytes(&content) {
+                                accumulators.push(acc)
+                            }
                         }
                     }
                     let latest_accumulator: MasterAccumulator = accumulators
                         .into_iter()
-                        .map(|acc| MasterAccumulator::from_ssz_bytes(&acc).unwrap())
                         .max_by_key(|acc| acc.latest_height())
-                        .unwrap();
+                        .unwrap_or_default();
                     // todo: compare that master accumulators all contain matching validation data
                     let response = Ok(json!(latest_accumulator));
                     let _ = request.resp.send(response);

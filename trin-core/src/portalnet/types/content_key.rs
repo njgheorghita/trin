@@ -359,8 +359,13 @@ mod test {
     use serial_test::serial;
     use test_log::test;
 
-    use crate::portalnet::storage::{PortalStorage, PortalStorageConfig, PortalStorageError};
-    use crate::utils::db::setup_temp_dir;
+    use crate::{
+        portalnet::{
+            storage::{PortalStorage, PortalStorageConfig, PortalStorageError},
+            types::distance::Distance,
+        },
+        utils::db::setup_temp_dir,
+    };
     use hex;
 
     //

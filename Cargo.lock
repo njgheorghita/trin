@@ -1235,6 +1235,7 @@ dependencies = [
  "anyhow",
  "clap",
  "discv5",
+ "eth2_ssz",
  "futures 0.3.21",
  "hex",
  "httpmock",

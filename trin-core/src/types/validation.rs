@@ -38,19 +38,6 @@ pub struct HeaderOracle {
 }
 
 impl HeaderOracle {
-    //
-    // build infura-supported header gossip function
-    // - - -
-    //
-    // validate -> accumulator w/timeout (if_available) || infura
-    // 1. load latest master from db...
-    // 2. fetch latest master from 10 peers...
-    // 3. select most up to date master...
-    // 4. update new headers via infura
-    //
-    // - probably need a validation pref cli flag
-    // - need a way to fallback to infura if acc is not ready
-    //
     pub fn new(infura_url: String, storage_config: PortalStorageConfig) -> Self {
         let portal_storage = Arc::new(RwLock::new(PortalStorage::new(storage_config).unwrap()));
         Self {
@@ -61,25 +48,22 @@ impl HeaderOracle {
         }
     }
 
-    pub async fn init(&mut self) {
-        //
-        // 1. Sample latest accumulator from 10 peers
-        // 2. Get latest master accumulator from portal storage
-        // 3. Update PortalStorage if new accumulator from is latest
-        // 4. Set current master accumulator to latest
-        //
-
+    /// 1. Sample latest accumulator from 10 peers
+    /// 2. Get latest master accumulator from portal storage
+    /// 3. Update PortalStorage if new accumulator from network is latest
+    /// 4. Set current master accumulator to latest
+    pub async fn bootstrap(&mut self) {
         // Get latest master accumulator from AccumulatorDB
-        let latest_acc_content_key =
+        let latest_macc_content_key =
             HistoryContentKey::MasterAccumulator(MasterAccumulatorKey::Latest(SszNone::new()));
-        let latest_local_acc: &Option<Vec<u8>> = &self
+        let latest_local_macc: &Option<Vec<u8>> = &self
             .portal_storage
             .as_ref()
             .read()
             .unwrap()
-            .get(&latest_acc_content_key)
-            .unwrap();
-        let latest_local_acc = match latest_local_acc {
+            .get(&latest_macc_content_key)
+            .unwrap_or(None);
+        let latest_local_macc = match latest_local_macc {
             Some(val) => MasterAccumulator::from_ssz_bytes(val).unwrap_or_default(),
             None => MasterAccumulator::default(),
         };
@@ -94,82 +78,28 @@ impl HeaderOracle {
         let history_jsonrpc_tx = match self.history_jsonrpc_tx.as_ref() {
             Some(val) => val,
             None => {
-                // use latest_local_acc if history jsonrpc is unavailable
-                self.master_accumulator = latest_local_acc;
+                // use latest_local_macc if history jsonrpc is unavailable
+                self.master_accumulator = latest_local_macc;
                 return;
             }
         };
-        history_jsonrpc_tx.send(request.clone()).unwrap();
-        let latest_network_acc = match resp_rx.blocking_recv().unwrap() {
-            Ok(val) => val,
-            Err(msg) => panic!("{}", msg),
+        history_jsonrpc_tx.send(request).unwrap();
+        let latest_network_macc: MasterAccumulator = match resp_rx.recv().await {
+            Some(val) => serde_json::from_value(val.unwrap()).unwrap_or_default(),
+            None => MasterAccumulator::default(),
         };
-        let latest_network_acc: MasterAccumulator =
-            serde_json::from_value(latest_network_acc).unwrap_or_default();
-        let mainnet_height = self.get_latest_mainnet_height().unwrap_or(0);
-        let max_height_diff = 256_u64;
 
-        // if our local version is latest and w/in height threshold, we good
-        if latest_local_acc.latest_height() > latest_network_acc.latest_height()
-            && mainnet_height - latest_local_acc.latest_height() < max_height_diff
-        {
-            return;
-        }
+        // Set current macc to latest macc
+        self.master_accumulator = latest_local_macc.clone();
 
-        // otherwise, we need to poll the network continuously, until we get an accumulator within
-        // the height threshold
-        let mut height_delta = 0u64;
-        let mut latest_acc =
-            match latest_network_acc.latest_height() > latest_local_acc.latest_height() {
-                true => latest_network_acc,
-                false => latest_local_acc,
-            };
-
-        // sample network until we get within threshold
-        while height_delta > max_height_diff {
-            self.history_jsonrpc_tx
+        // Update portal storage with latest network macc if network macc is latest
+        if latest_local_macc.latest_height() < latest_network_macc.latest_height() {
+            let _ = &self
+                .portal_storage
                 .as_ref()
-                // safe to unwrap here b/c we've already performed a check that the tx is present
+                .write()
                 .unwrap()
-                .send(request.clone())
-                .unwrap();
-            let latest_network_acc = match resp_rx.blocking_recv().unwrap() {
-                Ok(val) => val,
-                Err(msg) => panic!("{}", msg),
-            };
-            latest_acc = serde_json::from_value(latest_network_acc).unwrap();
-            height_delta = max_height_diff - latest_acc.latest_height()
-        }
-
-        //
-        // only update portal storage accumulator, once latest is established
-        // (aka our header is within max_height_diff
-        //
-        self.master_accumulator = latest_acc.clone();
-        let _ = &self
-            .portal_storage
-            .as_ref()
-            .write()
-            .unwrap()
-            .store(&latest_acc_content_key, &latest_acc.as_ssz_bytes())
-            .unwrap();
-    }
-
-    // todo
-    // 1.
-    // update accumulator when new headers are received (via infura)
-    // update PortalStorage's master accumulator every X headers
-    //
-    // 2.
-    // use updated accumulator to validate content
-
-    fn get_latest_mainnet_height(&self) -> anyhow::Result<u64> {
-        let method = "eth_getBlockByNumber".to_string();
-        let params = Params::Array(vec![json!("latest"), json!(false)]);
-        let response = self.make_infura_request(method, params)?;
-        match response["result"]["number"].as_str() {
-            Some(val) => Ok(u64::from_str_radix(val.trim_start_matches("0x"), 16)?),
-            None => Err(anyhow!("Invalid infura response")),
+                .store(&latest_macc_content_key, &latest_local_macc.as_ssz_bytes());
         }
     }
 
@@ -195,7 +125,7 @@ impl HeaderOracle {
         let params = Params::Array(vec![json!(block_hash), json!(false)]);
         let method = "eth_getBlockByHash".to_string();
         let response = self.make_infura_request(method, params)?;
-        Ok(Header::from_get_block_jsonrpc_response(response)?)
+        Header::from_get_block_jsonrpc_response(response)
     }
 
     fn make_infura_request(&self, method: String, params: Params) -> anyhow::Result<Value> {
@@ -248,21 +178,5 @@ impl Validator<IdentityContentKey> for MockValidator {
         IdentityContentKey: 'async_trait,
     {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    //use super::*;
-
-    use crate::utils::infura::build_infura_project_url_from_env;
-
-    #[tokio::test]
-    async fn test_tings() {
-        let _infura_url = build_infura_project_url_from_env();
-        //let portal_storage = PortalStorage::new();
-        //let mut header_oracle = HeaderOracle::new(NodeId::random(), infura_url, portal_storage);
-        //header_oracle.init().await;
-        assert_eq!(0, 1);
     }
 }

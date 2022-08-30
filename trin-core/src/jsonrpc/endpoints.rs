@@ -23,7 +23,6 @@ pub enum StateEndpoint {
 /// History network JSON-RPC endpoints. Start with "portalHistory_" prefix
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum HistoryEndpoint {
-    // Public endpoints (exposed over user-facing jsonrpc server)
     DataRadius,
     FindContent,
     FindNodes,
@@ -34,7 +33,6 @@ pub enum HistoryEndpoint {
     RecursiveFindContent,
     Store,
     RoutingTableInfo,
-    // Private endpoints (not exposed over user-facing jsonrpc server)
     SampleLatestMasterAccumulator,
 }
 
@@ -99,6 +97,9 @@ impl FromStr for TrinEndpoint {
                 HistoryEndpoint::RoutingTableInfo,
             )),
             "portal_historyStore" => Ok(TrinEndpoint::HistoryEndpoint(HistoryEndpoint::Store)),
+            "portal_historySampleLatestMasterAccumulator" => Ok(TrinEndpoint::HistoryEndpoint(
+                HistoryEndpoint::SampleLatestMasterAccumulator,
+            )),
             "portal_stateFindContent" => {
                 Ok(TrinEndpoint::StateEndpoint(StateEndpoint::FindContent))
             }
