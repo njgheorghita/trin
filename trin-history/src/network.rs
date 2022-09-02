@@ -1,7 +1,8 @@
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::Arc;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::RwLock as StdRwLock;
 
 use trin_core::{
     portalnet::{

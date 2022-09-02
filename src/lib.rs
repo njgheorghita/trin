@@ -1,7 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use log::debug;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 use trin_core::utils::db::setup_temp_dir;
 use trin_core::{
@@ -67,6 +67,12 @@ pub async fn run_trin(
         infura_url: infura_url.clone(),
         ..HeaderOracle::default()
     }));
+
+    let cloned = header_oracle.clone();
+    tokio::spawn(async move {
+        let xxx = cloned.read().await;
+        xxx.infura_follow_head().await
+    });
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);
     // Initialize state sub-network service and event handlers, if selected

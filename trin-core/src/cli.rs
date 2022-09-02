@@ -10,6 +10,7 @@ pub const DEFAULT_WEB3_HTTP_ADDRESS: &str = "127.0.0.1:8545";
 const DEFAULT_DISCOVERY_PORT: &str = "9000";
 pub const HISTORY_NETWORK: &str = "history";
 pub const STATE_NETWORK: &str = "state";
+pub const DEFAULT_VALIDATION_PROFILE: &str = "infura";
 const DEFAULT_SUBNETWORKS: &str = "history";
 pub const DEFAULT_STORAGE_CAPACITY: &str = "100000"; // 100mb
 
@@ -113,6 +114,13 @@ pub struct TrinConfig {
         help = "Use temporary data storage that is deleted on exit."
     )]
     pub ephemeral: bool,
+
+    #[structopt(
+        long = "validation-profile",
+        help = "Which validation profile to usexxxx.",
+        default_value(DEFAULT_VALIDATION_PROFILE),
+    )]
+    pub validation_profile: String,
 }
 
 impl Default for TrinConfig {
@@ -134,6 +142,7 @@ impl Default for TrinConfig {
             kb: DEFAULT_STORAGE_CAPACITY.parse().unwrap(),
             enable_metrics_with_url: None,
             ephemeral: false,
+            validation_profile: DEFAULT_VALIDATION_PROFILE.to_string(),
         }
     }
 }

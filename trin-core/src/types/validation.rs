@@ -1,7 +1,14 @@
+use std::{thread, time};
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use ethereum_types::H256;
+use futures::{Sink, Stream};
+use futures_util::{future, pin_mut, StreamExt};
 use serde_json::{json, Value};
+//use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use websocket::{OwnedMessage, url::Url, ClientBuilder, Message};
 
 use crate::{
     jsonrpc::{
@@ -10,7 +17,7 @@ use crate::{
     },
     portalnet::types::content_key::IdentityContentKey,
     types::header::Header,
-    utils::infura::INFURA_BASE_URL,
+    utils::infura::{INFURA_BASE_URL, build_infura_ws_url_from_env},
 };
 
 /// Responsible for dispatching cross-overlay-network requests
@@ -40,7 +47,29 @@ impl Default for HeaderOracle {
     }
 }
 
+
 impl HeaderOracle {
+    pub async fn infura_follow_head(&self) {
+        let infura_url = build_infura_ws_url_from_env();
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}"#;
+        let url = Url::parse(&infura_url).unwrap();
+        let mut client = ClientBuilder::from_url(&url).connect(None).unwrap();
+        client.send_message(&Message::text(request)).unwrap();
+        for message in client.incoming_messages() {
+            if let Ok(OwnedMessage::Text(val)) = message {
+                let response: Value = serde_json::from_str(&val).unwrap();
+                if let Some(val) = response.get("params") {
+                    if let Ok(val) = Header::from_get_block_jsonrpc_response(val.clone()) {
+                        let header = val;
+                        println!("found header: {:?}", header);
+                    } else {
+                        println!("unable to decode infura header");
+                    }
+                }
+            }
+        }
+    }
+
     // Currently falls back to infura, to be updated to use canonical block indices network.
     pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<String> {
         let hex_number = format!("0x{:02X}", block_number);
