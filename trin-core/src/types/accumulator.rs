@@ -1,4 +1,9 @@
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::prelude::*;
+
 use ethereum_types::{Bloom, H160, H256, U256};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
@@ -31,8 +36,6 @@ pub struct MasterAccumulator {
     current_epoch: EpochAccumulator,
 }
 
-// todo: remove dead-code exception as MasterAccumulator is connected to HeaderOracle
-#[allow(dead_code)]
 impl MasterAccumulator {
     pub fn latest_height(&self) -> u64 {
         let historical_height = self.historical_epochs.epochs.len() as u64 * EPOCH_SIZE as u64;
@@ -45,7 +48,14 @@ impl MasterAccumulator {
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    fn update_accumulator(&mut self, new_block_header: &Header) {
+    pub fn update_accumulator(&mut self, new_block_header: &Header) {
+        // check that new header is next
+        // todo: test
+        if new_block_header.number != self.latest_height() + 1 {
+            warn!("FUCK");
+            return;
+        }
+
         // get the previous total difficulty
         let last_total_difficulty = match self.current_epoch.header_records.len() {
             // genesis
@@ -68,6 +78,27 @@ impl MasterAccumulator {
                 .epochs
                 .push(epoch_hash)
                 .expect("Invalid accumulator state, more historical epochs than allowed.");
+            // write old epoch acc to disk
+            // todo: update this or remove it
+
+            // todo write in sszbytes?
+            let data = serde_json::to_string(&self.current_epoch).unwrap();
+            let filename = format!("./maccs/{:?}.txt", self.latest_height().to_string());
+            fs::write(filename, data.as_str()).expect("fuck");
+
+            let mut log_data = format!("time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap());
+            log_data.push_str("  -  ");
+            log_data.push_str(&self.latest_height().to_string());
+            let log_filename = "./maccs/metrics.txt";
+            let mut file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(log_filename)
+                .unwrap();
+            if let Err(e) = writeln!(file, "{}", log_data) {
+                println!("Couldn't write to file: {}", e);
+            }
+
             // initialize a new empty epoch
             self.current_epoch = EpochAccumulator {
                 header_records: HeaderRecordList::empty(),

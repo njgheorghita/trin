@@ -14,7 +14,7 @@ use trin_core::{
         discovery::Discovery, events::PortalnetEvents, storage::PortalStorage,
         types::messages::PortalnetConfig,
     },
-    types::validation::HeaderOracle,
+    types::validation::{HeaderOracle, ValidationProfile},
     utils::{bootnodes::parse_bootnodes, db::setup_temp_dir},
     utp::stream::UtpListener,
 };
@@ -62,7 +62,11 @@ pub async fn run_trin(
         PortalStorage::setup_config(discovery.local_enr().node_id(), trin_config.kb)?;
 
     // Initialize validation oracle
-    let header_oracle = HeaderOracle::new(infura_url.clone(), storage_config.clone());
+    let header_oracle = HeaderOracle::new(
+        infura_url.clone(),
+        storage_config.clone(),
+        trin_config.validation_profile.clone(),
+    );
     let header_oracle = Arc::new(RwLock::new(header_oracle));
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);
@@ -168,8 +172,13 @@ pub async fn run_trin(
     // - follow the head of the blockchain (via geth now / hg network later) & update macc
     tokio::spawn(async move {
         let mut lock = header_oracle.write().await;
-        lock.bootstrap().await;
-        // todo: lock.follow_head().await;
+        // idk if we should have the loop for min threshold in bootstrap...
+        // ... at least not until the network is a bit more saturated
+        //lock.bootstrap().await;
+        if trin_config.validation_profile == "geth/macc" {
+            //lock.infura_follow_head().await;
+            lock.geth_build_macc_fancy().await;
+        }
     });
 
     let _ = live_server_rx.recv().await;
