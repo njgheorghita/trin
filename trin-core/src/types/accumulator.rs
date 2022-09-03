@@ -1,4 +1,10 @@
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::prelude::*;
+
+use anyhow::anyhow;
 use ethereum_types::{Bloom, H160, H256, U256};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
@@ -7,6 +13,7 @@ use tree_hash::{MerkleHasher, TreeHash};
 use tree_hash_derive::TreeHash;
 
 use crate::types::header::Header;
+use crate::utils::bytes::hex_encode;
 
 /// Number of blocks / epoch
 pub const EPOCH_SIZE: usize = 8192;
@@ -31,8 +38,6 @@ pub struct MasterAccumulator {
     current_epoch: EpochAccumulator,
 }
 
-// todo: remove dead-code exception as MasterAccumulator is connected to HeaderOracle
-#[allow(dead_code)]
 impl MasterAccumulator {
     pub fn latest_height(&self) -> u64 {
         let historical_height = self.historical_epochs.epochs.len() as u64 * EPOCH_SIZE as u64;
@@ -45,7 +50,15 @@ impl MasterAccumulator {
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    fn update_accumulator(&mut self, new_block_header: &Header) {
+    pub fn update_accumulator(&mut self, new_block_header: &Header) {
+        // check that new header is next
+        // todo: test
+        //if new_block_header.number != self.latest_height() + 1 {
+        if new_block_header.number != self.latest_height() + 1{
+            warn!("FUCK");
+            return;
+        }
+
         // get the previous total difficulty
         let last_total_difficulty = match self.current_epoch.header_records.len() {
             // genesis
@@ -61,6 +74,39 @@ impl MasterAccumulator {
 
         // check if the epoch accumulator is full
         if self.current_epoch.header_records.len() == EPOCH_SIZE {
+            // write epoch to disk
+            let data = serde_json::to_string(&self.current_epoch).unwrap();
+            let raw_epoch = self.current_epoch.as_ssz_bytes();
+            let encoded_epoch = hex_encode(raw_epoch);
+            let filename = format!("./maccs/{}.txt", self.current_epoch.tree_hash_root());
+            fs::write(filename, encoded_epoch).expect("fuck");
+
+            // write metrics log
+            let mut log_data = format!("time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap());
+            log_data.push_str("  -  ");
+            log_data.push_str(&self.latest_height().to_string());
+            let log_filename = "./maccs/metrics.txt";
+            let mut file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(log_filename)
+                .unwrap();
+            if let Err(e) = writeln!(file, "{}", log_data) {
+                println!("Couldn't write to file: {}", e);
+            }
+
+            // write epoch index log
+            let mut index_data = format!("{:?},{:?}", self.latest_height(), self.current_epoch.tree_hash_root());
+            let index_filename = "./maccs/epoch_index.txt";
+            let mut file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open(index_filename)
+                .unwrap();
+            if let Err(e) = writeln!(file, "{}", index_data) {
+                println!("Couldn't write to file: {}", e);
+            }
+
             // compute the final hash for this epoch
             let epoch_hash = self.current_epoch.tree_hash_root();
             // append the hash for this epoch to the list of historical epochs
@@ -68,6 +114,10 @@ impl MasterAccumulator {
                 .epochs
                 .push(epoch_hash)
                 .expect("Invalid accumulator state, more historical epochs than allowed.");
+            // write old epoch acc to disk
+            // todo: update this or remove it
+
+
             // initialize a new empty epoch
             self.current_epoch = EpochAccumulator {
                 header_records: HeaderRecordList::empty(),
@@ -83,6 +133,20 @@ impl MasterAccumulator {
             .header_records
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
+    }
+
+    fn validate(header: Header) -> anyhow::Result<()> {
+
+        let macc = std::fs::read("./macc.txt").unwrap();
+        let raw_macc = String::from_utf8_lossy(&macc);
+        let macc: Self = serde_json::from_str(&raw_macc).unwrap();
+
+        if header.number > macc.latest_height() {
+            return Err(anyhow!("fuck"))
+        }
+
+        println!("macc latest height: {:?}", macc.latest_height());
+        Ok(())
     }
 }
 
@@ -283,5 +347,10 @@ mod test {
                     H256::from_slice(&expected_root)
                 );
             });
+    }
+
+    #[test]
+    fn master_accumulator_validate() {
+        MasterAccumulator::validate();
     }
 }

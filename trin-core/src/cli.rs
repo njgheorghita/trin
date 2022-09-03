@@ -12,6 +12,7 @@ pub const HISTORY_NETWORK: &str = "history";
 pub const STATE_NETWORK: &str = "state";
 const DEFAULT_SUBNETWORKS: &str = "history";
 pub const DEFAULT_STORAGE_CAPACITY: &str = "100000"; // 100mb
+pub const DEFAULT_VALIDATION_PROFILE: &str = "infura";
 
 #[derive(StructOpt, Debug, PartialEq, Clone)]
 #[structopt(
@@ -113,6 +114,16 @@ pub struct TrinConfig {
         help = "Use temporary data storage that is deleted on exit."
     )]
     pub ephemeral: bool,
+
+    #[structopt(
+        long = "validation-profile",
+        help = "Which validation profile to usexxxx.",
+        default_value(DEFAULT_VALIDATION_PROFILE),
+        // or "geth"
+        // or infura w/ macc
+        // or geth w/ macc ?
+    )]
+    pub validation_profile: String,
 }
 
 impl Default for TrinConfig {
@@ -134,6 +145,7 @@ impl Default for TrinConfig {
             kb: DEFAULT_STORAGE_CAPACITY.parse().unwrap(),
             enable_metrics_with_url: None,
             ephemeral: false,
+            validation_profile: DEFAULT_VALIDATION_PROFILE.to_string(),
         }
     }
 }

@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use std::os::unix;
 use std::{
-    fs,
+    env, fs,
     io::{self, BufRead, Read, Write},
     net::{TcpListener, TcpStream},
     panic,
@@ -384,12 +384,58 @@ fn dispatch_trin_request(
 
 // Handle all requests served by infura
 pub fn dispatch_infura_request(obj: JsonRequest, infura_url: &str) -> Result<String, String> {
-    match proxy_to_url(&obj, infura_url) {
+    match proxy_to_url(&obj, infura_url, None) {
         Ok(result_body) => Ok(std::str::from_utf8(&result_body).unwrap().to_owned()),
         Err(err) => Err(json!({
             "jsonrpc": "2.0",
             "id": obj.id,
             "error": format!("Infura failure: {}", err),
+        })
+        .to_string()),
+    }
+}
+
+// Handle all requests served by geth
+pub fn dispatch_geth_request(obj: JsonRequest, geth_url: &str) -> Result<String, String> {
+    let client_id = env::var("GETH_CLIENT_ID").unwrap();
+    let client_secret = env::var("GETH_CLIENT_SECRET").unwrap();
+    let headers = Some(vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("CF-Access-Client-Id".to_string(), client_id.to_string()),
+        (
+            "CF-Access-Client-Secret".to_string(),
+            client_secret.to_string(),
+        ),
+    ]);
+    match proxy_to_url(&obj, geth_url, headers) {
+        Ok(result_body) => Ok(std::str::from_utf8(&result_body).unwrap().to_owned()),
+        Err(err) => Err(json!({
+            "jsonrpc": "2.0",
+            "id": obj.id,
+            "error": format!("Geth failure: {}", err),
+        })
+        .to_string()),
+    }
+}
+
+// Handle all requests served by geth
+pub fn dispatch_geth_request_batch(obj: Vec<JsonRequest>, geth_url: &str) -> Result<String, String> {
+    let client_id = env::var("GETH_CLIENT_ID").unwrap();
+    let client_secret = env::var("GETH_CLIENT_SECRET").unwrap();
+    let headers = Some(vec![
+        ("Content-Type".to_string(), "application/json".to_string()),
+        ("CF-Access-Client-Id".to_string(), client_id.to_string()),
+        (
+            "CF-Access-Client-Secret".to_string(),
+            client_secret.to_string(),
+        ),
+    ]);
+    match proxy_to_url_batch(&obj, geth_url, headers) {
+        Ok(result_body) => Ok(std::str::from_utf8(&result_body).unwrap().to_owned()),
+        Err(err) => Err(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": format!("Geth failure: {}", err),
         })
         .to_string()),
     }
@@ -425,8 +471,48 @@ fn dispatch_portal_request(
     }
 }
 
-fn proxy_to_url(request: &JsonRequest, url: &str) -> io::Result<Vec<u8>> {
-    match ureq::post(url).send_json(ureq::json!(request)) {
+fn proxy_to_url_batch(
+    request: &Vec<JsonRequest>,
+    url: &str,
+    headers: Option<Vec<(String, String)>>,
+) -> io::Result<Vec<u8>> {
+    let mut server = ureq::post(url);
+    if headers.is_some() {
+        for (header, value) in headers.unwrap() {
+            server = server.clone().set(&header, &value);
+        }
+    }
+    match server.send_json(ureq::json!(request)) {
+        Ok(response) => match response.into_string() {
+            Ok(val) => Ok(val.as_bytes().to_vec()),
+            Err(msg) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error decoding response: {:?}", msg),
+            )),
+        },
+        Err(ureq::Error::Status(code, _response)) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Responded with status code: {:?}", code),
+        )),
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Request failure: {:?}", err),
+        )),
+    }
+}
+
+fn proxy_to_url(
+    request: &JsonRequest,
+    url: &str,
+    headers: Option<Vec<(String, String)>>,
+) -> io::Result<Vec<u8>> {
+    let mut server = ureq::post(url);
+    if headers.is_some() {
+        for (header, value) in headers.unwrap() {
+            server = server.clone().set(&header, &value);
+        }
+    }
+    match server.send_json(ureq::json!(request)) {
         Ok(response) => match response.into_string() {
             Ok(val) => Ok(val.as_bytes().to_vec()),
             Err(msg) => Err(io::Error::new(
