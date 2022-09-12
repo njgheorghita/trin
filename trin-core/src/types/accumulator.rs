@@ -1,6 +1,5 @@
 use anyhow::anyhow;
 use ethereum_types::{Bloom, H160, H256, U256};
-use log::warn;
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode};
@@ -105,14 +104,17 @@ impl MasterAccumulator {
 
     /// Update the master accumulator state with a new header.
     /// Adds new HeaderRecord to current epoch.
-    /// If current epoch fills up, it will refresh the epoch and add the
+    /// Will return current epoch if it fills up, refresh the epoch, and add the
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    pub fn update_accumulator(&mut self, new_block_header: &Header) {
+    pub fn update_accumulator(
+        &mut self,
+        new_block_header: &Header,
+    ) -> anyhow::Result<Option<EpochAccumulator>> {
+        // todo remove all expects
         if new_block_header.number != self.latest_height() {
-            warn!("Cannot update accumulator: new block header is not next.");
-            return;
+            return Err(anyhow!("fuck"));
         }
 
         // get the previous total difficulty
@@ -129,6 +131,7 @@ impl MasterAccumulator {
         };
 
         // check if the epoch accumulator is full
+        let mut full_epoch_acc = None;
         if self.current_epoch.header_records.len() == EPOCH_SIZE {
             // compute the final hash for this epoch
             let epoch_hash = self.current_epoch.tree_hash_root();
@@ -137,6 +140,7 @@ impl MasterAccumulator {
                 .epochs
                 .push(epoch_hash)
                 .expect("Invalid accumulator state, more historical epochs than allowed.");
+            full_epoch_acc = Some(self.current_epoch.clone());
             // initialize a new empty epoch
             self.current_epoch = EpochAccumulator {
                 header_records: HeaderRecordList::empty(),
@@ -152,6 +156,7 @@ impl MasterAccumulator {
             .header_records
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
+        Ok(full_epoch_acc)
     }
 }
 

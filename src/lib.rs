@@ -15,6 +15,7 @@ use trin_core::{
         types::messages::PortalnetConfig,
     },
     types::bridge::Bridge,
+    types::header::Header,
     types::header_oracle::HeaderOracle,
     utils::{bootnodes::parse_bootnodes, db::setup_temp_dir, provider::TrustedProvider},
     utp::stream::UtpListener,
@@ -63,7 +64,9 @@ pub async fn run_trin(
         PortalStorage::setup_config(discovery.local_enr().node_id(), trin_config.kb)?;
 
     // Initialize validation oracle
-    let header_oracle = HeaderOracle::new(trusted_provider.clone(), storage_config.clone());
+    let (header_tx, header_rx) = mpsc::unbounded_channel::<Header>();
+    let header_oracle =
+        HeaderOracle::new(trusted_provider.clone(), storage_config.clone(), header_rx);
     let header_oracle = Arc::new(RwLock::new(header_oracle));
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);
@@ -109,7 +112,7 @@ pub async fn run_trin(
     // Initialize json-rpc server
     let (portal_jsonrpc_tx, portal_jsonrpc_rx) = mpsc::unbounded_channel::<PortalJsonRpcRequest>();
     let jsonrpc_trin_config = trin_config.clone();
-    let (live_server_tx, mut live_server_rx) = tokio::sync::mpsc::channel::<bool>(1);
+    let (live_server_tx, mut live_server_rx) = mpsc::channel::<bool>(1);
     let json_exiter = Arc::new(JsonRpcExiter::new());
     {
         let json_exiter_clone = Arc::clone(&json_exiter);
@@ -175,8 +178,10 @@ pub async fn run_trin(
                 trusted_provider: lock.trusted_provider.clone(),
                 // safe naked unwrap, since we always require history network to be run
                 history_jsonrpc_tx: lock.history_jsonrpc_tx.as_ref().unwrap().clone(),
+                header_oracle_tx: header_tx,
             };
-            bridge.follow_head().await;
+            tokio::spawn(async move { bridge.follow_head().await });
+            lock.listen_for_new_headers().await;
         }
     });
 

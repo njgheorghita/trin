@@ -22,6 +22,7 @@ use crate::{
 pub struct Bridge {
     pub trusted_provider: TrustedProvider,
     pub history_jsonrpc_tx: tokio::sync::mpsc::UnboundedSender<HistoryJsonRpcRequest>,
+    pub header_oracle_tx: tokio::sync::mpsc::UnboundedSender<Header>,
 }
 
 impl Bridge {
@@ -42,7 +43,7 @@ impl Bridge {
     // this limitation atm. It will ping the client every 3 seconds for new headers.
     // 3 seconds was chosen to minimize network traffic, but still pick up on new headers
     // relatively quickly after they are mined.
-    pub async fn follow_head_http(&self) {
+    async fn follow_head_http(&self) {
         info!("Subscribing to new heads from http trusted provider.");
         // track last offered header number so that we don't congest the chain history network
         // with duplicate offers of the same data
@@ -72,6 +73,9 @@ impl Bridge {
                 let params = Params::Array(vec![json!(content_key), json!(raw_latest_header)]);
                 let _ = self.dispatch_chain_history_request(endpoint, params).await;
                 last_offered_header_number = latest_header.number;
+                // Offer new header to bridge
+                info!("sending new header to header oracle");
+                self.header_oracle_tx.send(latest_header).unwrap();
             }
             thread::sleep(time::Duration::from_secs(3));
         }
@@ -80,7 +84,7 @@ impl Bridge {
     /// Websocket process to subscribe to new heads from a trusted provider.
     /// When a new head is received, it is used to update the local master accumulator,
     /// and then offered to the chain history network.
-    pub async fn follow_head_ws(&self) {
+    async fn follow_head_ws(&self) {
         info!("Subscribing to new heads from ws trusted provider.");
         let request = r#"{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}"#;
         let url = Url::parse(self.trusted_provider.ws.as_ref().unwrap()).unwrap();

@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::anyhow;
 use discv5::enr::NodeId;
 use hex;
 use log::{debug, error, info};
@@ -12,13 +13,41 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rocksdb::{Options, DB};
 use rusqlite::params;
+use ssz::{Decode, Encode};
 use thiserror::Error;
 
 use super::types::{
-    content_key::OverlayContentKey,
+    content_key::{HistoryContentKey, MasterAccumulator as MasterAccumulatorKey, OverlayContentKey, SszNone},
     distance::{Distance, Metric, XorMetric},
 };
+use crate::types::accumulator::MasterAccumulator;
 use crate::utils::db::get_data_dir;
+
+#[derive(Debug)]
+pub struct AccumulatorDB {
+    db: rocksdb::DB,
+}
+
+impl AccumulatorDB {
+    pub fn save_new_macc(&self, new_macc: Vec<u8>) -> anyhow::Result<()> { 
+        let new_macc = MasterAccumulator::from_ssz_bytes(&new_macc).unwrap();
+        let current_macc = self.current_macc();
+        if current_macc.validation_data_matches(&new_macc).is_err() {
+            return Err(anyhow!("validation data invalid"))
+        }
+        if current_macc.latest_height() < new_macc.latest_height() {
+            self.db.put(LATEST_MASTER_ACC_CONTENT_ID, new_macc.as_ssz_bytes());
+        }
+        Ok(())
+    }
+
+    fn current_macc(&self) -> MasterAccumulator {
+        match self.db.get(LATEST_MASTER_ACC_CONTENT_ID).unwrap() {
+            Some(val) => MasterAccumulator::from_ssz_bytes(&val).unwrap(),
+            None => panic!("fuck")
+        }
+    }
+}
 
 // TODO: Replace enum with generic type parameter. This will require that we have a way to
 // associate a "find farthest" query with the generic Metric.
@@ -34,7 +63,7 @@ pub struct PortalStorageConfig {
     pub node_id: NodeId,
     pub distance_function: DistanceFunction,
     pub db: Arc<rocksdb::DB>,
-    pub accumulator_db: Arc<rocksdb::DB>,
+    pub accumulator_db: Arc<AccumulatorDB>,
     pub sql_connection_pool: Pool<SqliteConnectionManager>,
 }
 
@@ -63,7 +92,7 @@ pub struct PortalStorage {
     pub data_radius: Distance,
     farthest_content_id: Option<[u8; 32]>,
     db: Arc<rocksdb::DB>,
-    accumulator_db: Arc<rocksdb::DB>,
+    accumulator_db: Arc<AccumulatorDB>,
     sql_connection_pool: Pool<SqliteConnectionManager>,
     distance_function: DistanceFunction,
 }
@@ -198,9 +227,9 @@ impl PortalStorage {
         let distance_to_content_id = self.distance_to_content_id(&content_id);
 
         // Always store master accumulators in accumulator db
-        // todo: add logic to accumulator_db to only overwrite if new macc is longer
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
-            self.accumulator_db.put(&content_id, value)?;
+            // unwrap
+            self.accumulator_db.save_new_macc(value.to_vec()).unwrap();
         } else if distance_to_content_id > self.data_radius {
             // Return Err if non-macc content is outside radius
             debug!("Not storing: {:02X?}", key.clone().into());
@@ -282,7 +311,7 @@ impl PortalStorage {
     pub fn get(&self, key: &impl OverlayContentKey) -> Result<Option<Vec<u8>>, PortalStorageError> {
         let content_id = key.content_id();
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
-            Ok(self.accumulator_db.get(content_id)?)
+            Ok(Some(self.accumulator_db.current_macc().as_ssz_bytes()))
         } else {
             Ok(self.db.get(content_id)?)
         }
@@ -471,14 +500,14 @@ impl PortalStorage {
     }
 
     /// Helper function for opening a RocksDB connection for the accumulatordb.
-    pub fn setup_accumulatordb(node_id: NodeId) -> Result<rocksdb::DB, PortalStorageError> {
+    pub fn setup_accumulatordb(node_id: NodeId) -> Result<AccumulatorDB, PortalStorageError> {
         let mut data_path: PathBuf = get_data_dir(node_id);
         data_path.push("accumulatordb");
         debug!("Setting up accumulatordb at path: {:?}", data_path);
 
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
-        Ok(DB::open(&db_opts, data_path)?)
+        Ok(AccumulatorDB{ db: DB::open(&db_opts, data_path)?})
     }
 
     /// Helper function for opening a RocksDB connection for the radius-constrained db.
@@ -666,6 +695,24 @@ pub mod test {
 
         std::mem::drop(storage);
         temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test_log::test(tokio::test)]
+    #[serial]
+    async fn longer_macc_overwrites_shorter_macc() -> Result<(), PortalStorageError> {
+        Ok(())
+    }
+
+    #[test_log::test(tokio::test)]
+    #[serial]
+    async fn shorter_macc_doesnt_overwrites_longer_macc() -> Result<(), PortalStorageError> {
+        Ok(())
+    }
+
+    #[test_log::test(tokio::test)]
+    #[serial]
+    async fn invalid_macc_doesnt_overwrites_local_macc() -> Result<(), PortalStorageError> {
         Ok(())
     }
 
