@@ -32,23 +32,13 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
         HistoryContentKey: 'async_trait,
     {
         match content_key {
-            HistoryContentKey::BlockHeader(key) => {
+            HistoryContentKey::BlockHeader(_key) => {
                 let header: Header = rlp::decode(content)?;
-                let expected_hash = &self
-                    .header_oracle
+                self.header_oracle
                     .write()
                     .await
-                    .get_hash_at_height(header.number)?;
-                let actual_hash = &hex::encode(key.block_hash);
-                if actual_hash == expected_hash {
-                    Ok(())
-                } else {
-                    Err(anyhow!(
-                        "Content validation failed. Found: {:?} - Expected: {:?}",
-                        actual_hash,
-                        expected_hash
-                    ))
-                }
+                    .validate_header_is_canonical(header)
+                    .await
             }
             HistoryContentKey::BlockBody(key) => {
                 let block_body = match BlockBody::from_ssz_bytes(content) {
@@ -123,7 +113,6 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use discv5::enr::NodeId;
     use ethereum_types::U256;
     use hex;
     use httpmock::prelude::*;
@@ -132,12 +121,9 @@ mod tests {
     use ssz_types::{typenum, VariableList};
 
     use trin_core::{
-        portalnet::{
-            storage::PortalStorageConfig,
-            types::{
-                content_key::{BlockBody as BlockBodyKey, BlockHeader, BlockReceipts},
-                messages::ByteList,
-            },
+        portalnet::types::{
+            content_key::{BlockBody as BlockBodyKey, BlockHeader, BlockReceipts},
+            messages::ByteList,
         },
         utils::{bytes::hex_decode, provider::TrustedProvider},
     };
@@ -379,16 +365,11 @@ mod tests {
     }
 
     fn default_header_oracle(infura_url: String) -> Arc<RwLock<HeaderOracle>> {
-        let node_id = NodeId::random();
-        let storage_config = PortalStorageConfig::new(100, node_id);
         let trusted_provider = TrustedProvider {
             http: ureq::post(&infura_url),
             ws: None,
         };
-        Arc::new(RwLock::new(HeaderOracle::new(
-            trusted_provider,
-            storage_config,
-        )))
+        Arc::new(RwLock::new(HeaderOracle::new(trusted_provider)))
     }
 
     fn block_14764013_hash() -> H256 {

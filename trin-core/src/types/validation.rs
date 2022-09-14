@@ -1,17 +1,18 @@
-use std::sync::{Arc, RwLock};
+use std::fs;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use ethereum_types::H256;
 use serde_json::{json, Value};
-use ssz::{Decode, Encode};
 use tokio::sync::mpsc;
 
 use crate::{
-    jsonrpc::{
-        endpoints::HistoryEndpoint,
-        types::{HistoryJsonRpcRequest, Params},
+    portalnet::types::content_key::IdentityContentKey,
+    types::{
+        accumulator::{validate_pre_merge_header, MasterAccumulator},
+        header::Header,
     },
+    jsonrpc::types::{HistoryJsonRpcRequest, Params},
     portalnet::{
         storage::{ContentStore, PortalStorage, PortalStorageConfig},
         types::content_key::{
@@ -19,9 +20,12 @@ use crate::{
             SszNone,
         },
     },
-    types::{accumulator::MasterAccumulator, header::Header},
-    utils::provider::TrustedProvider,
+    types::{accumulator::{validate_pre_merge_header, MasterAccumulator}, header::Header},
+    utils::{bytes::hex_decode, provider::TrustedProvider},
 };
+
+// todo: update once mainnet master_acc has synced
+pub const MERGE_BLOCK_NUMBER: u64 = 274300u64;
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
@@ -32,18 +36,19 @@ pub struct HeaderOracle {
     // We could simply store the main portal jsonrpc tx channel here, rather than each
     // individual channel. But my sense is that this will be more useful in terms of
     // determining which subnetworks are actually available.
-    pub history_jsonrpc_tx: Option<tokio::sync::mpsc::UnboundedSender<HistoryJsonRpcRequest>>,
-    pub master_accumulator: MasterAccumulator,
-    pub portal_storage: Arc<RwLock<PortalStorage>>,
+    pub history_jsonrpc_tx: Option<mpsc::UnboundedSender<HistoryJsonRpcRequest>>,
+    pub master_acc: MasterAccumulator,
 }
 
 impl HeaderOracle {
-    pub fn new(trusted_provider: TrustedProvider, storage_config: PortalStorageConfig) -> Self {
-        let portal_storage = Arc::new(RwLock::new(PortalStorage::new(storage_config).unwrap()));
+    pub fn new(trusted_provider: TrustedProvider) -> Self {
+        let master_acc = fs::read("./src/assets/macc.txt").unwrap();
+        let master_acc = String::from_utf8_lossy(&master_acc);
+        let master_acc: MasterAccumulator = serde_json::from_str(&master_acc).unwrap();
         Self {
             trusted_provider,
             history_jsonrpc_tx: None,
-            master_accumulator: MasterAccumulator::default(),
+            master_accumulator: master_acc,
             portal_storage,
         }
     }
@@ -133,9 +138,37 @@ impl HeaderOracle {
         Ok(header)
     }
 
-    // To be updated to use chain history || header gossip network.
-    pub fn _is_hash_canonical() -> anyhow::Result<bool> {
-        Ok(true)
+    fn history_jsonrpc_tx(&self) -> anyhow::Result<mpsc::UnboundedSender<HistoryJsonRpcRequest>> {
+        match self.history_jsonrpc_tx.clone() {
+            Some(val) => Ok(val),
+            None => Err(anyhow!("History subnetwork is not available")),
+        }
+    }
+
+    pub async fn validate_header_is_canonical(&self, header: Header) -> anyhow::Result<()> {
+        if header.number > MERGE_BLOCK_NUMBER {
+            if let Ok(val) =
+                validate_pre_merge_header(&header, &self.master_acc, self.history_jsonrpc_tx()?)
+                    .await
+            {
+                match val {
+                    true => return Ok(()),
+                    false => return Err(anyhow!("hash is invalid")),
+                }
+            }
+        }
+        // either header is post-merge or there was an error trying to validate it via chain
+        // history network, so we fallback to infura
+        let trusted_hash = self.get_hash_at_height(header.number).unwrap();
+        let trusted_hash = H256::from_slice(&hex_decode(&trusted_hash)?);
+        match trusted_hash == header.hash() {
+            true => Ok(()),
+            false => Err(anyhow!(
+                "Content validation failed. Found: {:?} - Expected: {:?}",
+                header.hash(),
+                trusted_hash
+            )),
+        }
     }
 }
 
@@ -165,5 +198,20 @@ impl Validator<IdentityContentKey> for MockValidator {
         IdentityContentKey: 'async_trait,
     {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use crate::cli::TrinConfig;
+
+    #[test]
+    fn header_oracle_bootstraps_with_frozen_macc() {
+        let trin_config = TrinConfig::default();
+        let trusted_provider = TrustedProvider::from_trin_config(&trin_config);
+        let header_oracle = HeaderOracle::new(trusted_provider);
+        assert_eq!(header_oracle.master_acc.latest_height(), MERGE_BLOCK_NUMBER);
     }
 }

@@ -1,13 +1,22 @@
 use anyhow::anyhow;
-use ethereum_types::{Bloom, H160, H256, U256};
+use ethereum_types::U256;
 use serde::{Deserialize, Serialize};
-use ssz::Encode;
+use serde_json::{json, Value};
+use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
+use tokio::sync::mpsc;
+use tracing::log::warn;
 use tree_hash::{MerkleHasher, TreeHash};
 use tree_hash_derive::TreeHash;
 
-use crate::types::header::Header;
+use crate::jsonrpc::endpoints::HistoryEndpoint;
+use crate::jsonrpc::types::{HistoryJsonRpcRequest, Params};
+use crate::portalnet::types::content_key::{
+    EpochAccumulator as EpochAccumulatorKey, HistoryContentKey,
+};
+use crate::types::{header::Header, validation::MERGE_BLOCK_NUMBER};
+use crate::utils::bytes::{hex_decode, hex_encode};
 
 /// Number of blocks / epoch
 pub const EPOCH_SIZE: usize = 8192;
@@ -54,61 +63,22 @@ impl MasterAccumulator {
             .expect("Historical Epoch count should not overflow u64")
     }
 
-    /// Compare that one master accumulator contains the same validation data as another,
-    /// regardless of each accumulator's current height.
-    pub fn validation_data_matches(&self, other: &Self) -> anyhow::Result<()> {
-        if self.historical_epochs.tree_hash_root() != other.historical_epochs.tree_hash_root() {
-            let historical_epochs = self
-                .historical_epochs
-                .epochs
-                .into_iter()
-                .zip(other.historical_epochs.epochs.into_iter());
-            for (index, (self_epoch, other_epoch)) in historical_epochs.into_iter().enumerate() {
-                if self_epoch != other_epoch {
-                    return Err(anyhow!(
-                        "Accumulator mismatch at historical epoch #{:?}.
-                        Expected historical epoch root: {:?}.
-                        Found historical epoch root: {:?}",
-                        index,
-                        self_epoch,
-                        other_epoch
-                    ));
-                }
-            }
-        }
-        // only check header records if accs. in same epoch.
-        if self.epoch_number() != other.epoch_number() {
-            return Ok(());
-        }
-        if self.current_epoch.tree_hash_root() != other.current_epoch.tree_hash_root() {
-            let header_records = self
-                .current_epoch
-                .header_records
-                .into_iter()
-                .zip(other.current_epoch.header_records.into_iter());
-            for (index, (self_hr, other_hr)) in header_records.into_iter().enumerate() {
-                if self_hr != other_hr {
-                    return Err(anyhow!(
-                        "Accumulator mismatch at header record #{:?}.
-                        Expected header record: {:?}.
-                        Found header record: {:?}",
-                        index,
-                        self_hr,
-                        other_hr
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Update the master accumulator state with a new header.
     /// Adds new HeaderRecord to current epoch.
     /// If current epoch fills up, it will refresh the epoch and add the
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    fn update_accumulator(&mut self, new_block_header: &Header) {
+    fn update_accumulator(&mut self, new_header: &Header) {
+        if new_header.number > MERGE_BLOCK_NUMBER {
+            warn!("Invalid master acc update: Header is post-merge.");
+            return;
+        }
+        if new_header.number != self.latest_height() {
+            warn!("Invalid master acc update: Header is not at the expected height.");
+            return;
+        }
+
         // get the previous total difficulty
         let last_total_difficulty = match self.current_epoch.header_records.len() {
             // genesis
@@ -139,13 +109,101 @@ impl MasterAccumulator {
 
         // construct the concise record for the new header and add it to the current epoch
         let header_record = HeaderRecord {
-            block_hash: new_block_header.hash(),
-            total_difficulty: last_total_difficulty + new_block_header.difficulty,
+            block_hash: new_header.hash(),
+            total_difficulty: last_total_difficulty + new_header.difficulty,
         };
         self.current_epoch
             .header_records
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
+    }
+
+    fn historical_header_count(&self) -> u64 {
+        self.epoch_number() * EPOCH_SIZE as u64
+    }
+
+    fn get_epoch_index(&self, header: &Header) -> u64 {
+        header.number / EPOCH_SIZE as u64
+    }
+
+    fn is_header_in_current_epoch(&self, header: &Header) -> bool {
+        let current_epoch_block_min = match self.historical_header_count() {
+            0 => match header.number {
+                0u64 => return true,
+                _ => 0,
+            },
+            _ => self.historical_header_count() - 1,
+        };
+        header.number > current_epoch_block_min
+            && header.number <= current_epoch_block_min + EPOCH_SIZE as u64
+    }
+}
+
+/// Validation function for pre merge headers that will use the master accumulator to validate
+/// whether or not the given header is canonical. Returns true if header is validated, false if
+/// header is invalidated, and an err if it wasn't able to validate the header using the master
+/// accumulator.
+pub async fn validate_pre_merge_header(
+    header: &Header,
+    master_acc: &MasterAccumulator,
+    history_jsonrpc_tx: mpsc::UnboundedSender<HistoryJsonRpcRequest>,
+) -> anyhow::Result<bool> {
+    if header.number > MERGE_BLOCK_NUMBER {
+        return Err(anyhow!("Unable to validate post-merge block."));
+    }
+    match master_acc.is_header_in_current_epoch(header) {
+        true => {
+            let rel_index = header.number - master_acc.historical_header_count();
+            if rel_index > (master_acc.header_record_count() - 1u64) {
+                return Err(anyhow!("Unable to validate future header."));
+            };
+            let verified_block_hash =
+                master_acc.current_epoch.header_records[rel_index as usize].block_hash;
+            Ok(verified_block_hash == header.hash())
+        }
+        false => {
+            let epoch_index = master_acc.get_epoch_index(header);
+            let epoch_hash = master_acc.historical_epochs.epochs[epoch_index as usize];
+            let content_key: Vec<u8> =
+                HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash }).into();
+            let content_key = hex_encode(content_key);
+            let endpoint = HistoryEndpoint::RecursiveFindContent;
+            let params = Params::Array(vec![json!(content_key)]);
+            let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
+            let request = HistoryJsonRpcRequest {
+                endpoint,
+                resp: resp_tx,
+                params,
+            };
+            history_jsonrpc_tx.send(request).unwrap();
+
+            let epoch_acc_ssz = match resp_rx.recv().await {
+                Some(val) => val,
+                None => return Err(anyhow!("No response from chain history subnetwork")),
+            };
+            let epoch_acc_ssz = match epoch_acc_ssz {
+                Ok(result) => result,
+                Err(msg) => {
+                    return Err(anyhow!(
+                        "Error returned from chain history subnetwork: {:?}",
+                        msg
+                    ))
+                }
+            };
+            let epoch_acc_ssz = match epoch_acc_ssz.as_str() {
+                Some(val) => val,
+                None => {
+                    return Err(anyhow!(
+                        "Invalid epoch accumulator received from chain history network"
+                    ))
+                }
+            };
+            let epoch_acc_ssz = hex_decode(epoch_acc_ssz).unwrap();
+            let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc_ssz).unwrap();
+            let header_index = (header.number as u64) - epoch_index * (EPOCH_SIZE as u64);
+            let header_record = epoch_acc.header_records[header_index as usize];
+            Ok(header_record.block_hash == header.hash())
+        }
     }
 }
 
@@ -258,140 +316,20 @@ pub struct HeaderRecord {
     block_hash: tree_hash::Hash256,
     total_difficulty: U256,
 }
-
-//
-// Testing utils
-//
-pub fn generate_random_macc(block_height: u32) -> MasterAccumulator {
-    let epoch_height = block_height / EPOCH_SIZE as u32;
-    let current_height = block_height % EPOCH_SIZE as u32;
-    let mut random_historical_epochs: Vec<H256> = vec![];
-    for _h in 0..epoch_height {
-        random_historical_epochs.push(H256::random());
-    }
-    let mut random_header_records: Vec<HeaderRecord> = vec![];
-    for h in 0..current_height {
-        random_header_records.push(HeaderRecord {
-            block_hash: tree_hash::Hash256::random(),
-            total_difficulty: U256::from(h + (epoch_height * EPOCH_SIZE as u32)),
-        });
-    }
-    MasterAccumulator {
-        historical_epochs: HistoricalEpochs {
-            epochs: HistoricalEpochsList::from(random_historical_epochs),
-        },
-        current_epoch: EpochAccumulator {
-            header_records: HeaderRecordList::from(random_header_records),
-        },
-    }
-}
-
-pub fn add_blocks_to_macc(macc: &mut MasterAccumulator, count: u32) {
-    for _height in 0..count {
-        let new_header = Header {
-            parent_hash: H256::random(),
-            uncles_hash: H256::random(),
-            author: H160::random(),
-            state_root: H256::random(),
-            transactions_root: H256::random(),
-            receipts_root: H256::random(),
-            log_bloom: Bloom::zero(),
-            difficulty: U256::from_dec_str("1").unwrap(),
-            number: (macc.latest_height() + 1_u64) as u64,
-            gas_limit: U256::from_dec_str("1").unwrap(),
-            gas_used: U256::from_dec_str("1").unwrap(),
-            timestamp: 1,
-            extra_data: vec![],
-            mix_hash: None,
-            nonce: None,
-            base_fee_per_gas: None,
-        };
-        macc.update_accumulator(&new_header);
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::Rng;
-    use rstest::rstest;
+    use std::fs;
+    use std::str::FromStr;
 
-    #[rstest]
-    #[case(0)]
-    #[case(1)]
-    #[case(2)]
-    #[case(1000)]
-    #[case(EPOCH_SIZE as u32 - 1)]
-    #[case(EPOCH_SIZE as u32)]
-    #[case(EPOCH_SIZE as u32 + 1)]
-    #[case(EPOCH_SIZE as u32 + 1000)]
-    #[case(EPOCH_SIZE as u32 * 2 - 1)]
-    #[case(EPOCH_SIZE as u32 * 2)]
-    #[case(EPOCH_SIZE as u32 * 2 + 1)]
-    #[case(EPOCH_SIZE as u32 * 2 + 1000)]
-    #[case(EPOCH_SIZE as u32 * 100 - 1)]
-    #[case(EPOCH_SIZE as u32 * 100)]
-    #[case(EPOCH_SIZE as u32 * 100 + 1)]
-    #[case(EPOCH_SIZE as u32 * 100 + 1000)]
-    fn validation_data_matches_valid(#[case] block_height: u32) {
-        let macc = generate_random_macc(block_height);
-        let mut macc_copy = macc.clone();
-        // inject additional header_record
-        let _ = macc_copy.current_epoch.header_records.push(HeaderRecord {
-            block_hash: tree_hash::Hash256::random(),
-            total_difficulty: U256::from(macc.latest_height() + 1),
-        });
-        macc.validation_data_matches(&macc_copy).unwrap();
-        add_blocks_to_macc(&mut macc_copy, 100);
-        macc.validation_data_matches(&macc_copy).unwrap();
-        add_blocks_to_macc(&mut macc_copy, EPOCH_SIZE as u32);
-        macc.validation_data_matches(&macc_copy).unwrap();
-        add_blocks_to_macc(&mut macc_copy, EPOCH_SIZE as u32 + 1);
-        macc.validation_data_matches(&macc_copy).unwrap();
-        add_blocks_to_macc(&mut macc_copy, EPOCH_SIZE as u32 + 4000);
-        macc.validation_data_matches(&macc_copy).unwrap();
-    }
+    use ethereum_types::{Bloom, H160, H256};
+    use rstest::*;
 
-    #[rstest]
-    #[case(10000)]
-    #[case(100000)]
-    #[case(10000000)]
-    #[should_panic(expected = "Accumulator mismatch at historical epoch")]
-    fn validation_data_matches_invalid_historical_epoch(#[case] block_height: u32) {
-        let macc = generate_random_macc(block_height);
-        let mut macc_copy = macc.clone();
-        let index_to_remove = rand::thread_rng().gen_range(0..macc.epoch_number()) as usize;
-        macc_copy.historical_epochs.epochs[index_to_remove] = H256::random();
-        macc.validation_data_matches(&macc_copy).unwrap()
-    }
-
-    #[rstest]
-    #[case(10000)]
-    #[case(100000)]
-    #[case(10000000)]
-    #[should_panic(expected = "Accumulator mismatch at header record")]
-    fn validation_data_matches_invalid_header_record(#[case] block_height: u32) {
-        let macc = generate_random_macc(block_height);
-        let mut macc_copy = macc.clone();
-        let index_to_remove =
-            rand::thread_rng().gen_range(0..macc.current_epoch.header_records.len());
-        macc_copy.current_epoch.header_records[index_to_remove] = HeaderRecord {
-            block_hash: tree_hash::Hash256::random(),
-            total_difficulty: U256::from(macc.latest_height() + 1),
-        };
-        macc.validation_data_matches(&macc_copy).unwrap()
-    }
+    use crate::jsonrpc::types::RecursiveFindContentParams;
 
     #[test]
     fn master_accumulator_update() {
-        let block_0_rlp = hex::decode("f90214a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0d7f8974fb5ac78d9ac099b9ad5018bedc2ce0a72dad1827a1709da30580f0544a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000850400000000808213888080a011bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82faa00000000000000000000000000000000000000000000000000000000000000000880000000000000042").unwrap();
-        let block_1_rlp = hex::decode("f90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec4").unwrap();
-        let block_2_rlp = hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap();
-
-        let block_0_header: Header = rlp::decode(&block_0_rlp).unwrap();
-        let block_1_header: Header = rlp::decode(&block_1_rlp).unwrap();
-        let block_2_header: Header = rlp::decode(&block_2_rlp).unwrap();
-        let headers = vec![block_0_header, block_1_header, block_2_header];
+        let headers = vec![get_header(0), get_header(1), get_header(2)];
 
         // test values sourced from:
         // https://github.com/status-im/nimbus-eth1/blob/d4d4e8c28fec8aab4a4c8e919ff31a6a4970c580/fluffy/tests/test_accumulator.nim
@@ -414,5 +352,242 @@ mod test {
                     H256::from_slice(&expected_root)
                 );
             });
+    }
+
+    #[tokio::test]
+    async fn master_accumulator_validates_current_epoch_header() {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        let random_header = &headers[9999];
+        let (tx, _) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(
+            validate_pre_merge_header(random_header, &master_acc, tx.clone())
+                .await
+                .unwrap()
+        );
+        // test first header in epoch
+        let random_header = &headers[8192];
+        assert!(validate_pre_merge_header(random_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn mainnet_master_accumulator_validates_current_epoch_header() {
+        let master_acc = get_mainnet_master_acc();
+        let header = get_header(274_250);
+        assert!(master_acc.is_header_in_current_epoch(&header));
+        let (tx, _) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(validate_pre_merge_header(&header, &master_acc, tx.clone())
+            .await
+            .unwrap());
+    }
+
+    #[rstest]
+    #[case(0)]
+    #[case(1)]
+    #[case(2)]
+    #[case(200_000)]
+    #[tokio::test]
+    async fn master_accumulator_validates_historical_epoch_headers(#[case] block_number: u64) {
+        let master_acc = get_mainnet_master_acc();
+        let header = get_header(block_number);
+        let (tx, mut rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        tokio::spawn(async move {
+            match rx.recv().await {
+                Some(request) => {
+                    let response = RecursiveFindContentParams::try_from(request.params).unwrap();
+                    let response = hex_encode(response.content_key.to_vec());
+                    // comment
+                    let epoch_acc_hash = response.trim_start_matches("0x03");
+                    let epoch_acc_hash = H256::from_str(epoch_acc_hash).unwrap();
+                    let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.txt");
+                    let epoch_acc = fs::read_to_string(epoch_acc_path).unwrap();
+                    let content: Value = json!(epoch_acc);
+                    let _ = request.resp.send(Ok(content));
+                }
+                None => {
+                    panic!("Test run failed: Unable to get response from master_acc validation.")
+                }
+            }
+        });
+        assert!(validate_pre_merge_header(&header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn master_accumulator_invalidates_future_header() {
+        let mut master_acc = MasterAccumulator::default();
+        add_blocks_to_master_acc(&mut master_acc, 10000);
+        let random_header = generate_random_header(&10000);
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        // comment
+        assert!(
+            !validate_pre_merge_header(&random_header, &master_acc, tx.clone())
+                .await
+                .unwrap()
+        );
+        // comment
+        let random_header = generate_random_header(&10000000);
+        assert!(!validate_pre_merge_header(&random_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn mainnet_master_accumulator_invalidates_invalid_historical_headers() {
+        let master_acc = get_mainnet_master_acc();
+        let mut invalid_header = get_header(200_000);
+        invalid_header.timestamp = 1000;
+        let (tx, mut rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        tokio::spawn(async move {
+            match rx.recv().await {
+                Some(request) => {
+                    let response = RecursiveFindContentParams::try_from(request.params).unwrap();
+                    let response = hex_encode(response.content_key.to_vec());
+                    let epoch_acc_hash = response.trim_start_matches("0x03");
+                    let epoch_acc_hash = H256::from_str(epoch_acc_hash).unwrap();
+                    let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.txt");
+                    let epoch_acc = fs::read_to_string(epoch_acc_path).unwrap();
+                    let content: Value = json!(epoch_acc);
+                    let _ = request.resp.send(Ok(content));
+                }
+                None => {
+                    panic!("Test run failed: Unable to get response from master_acc validation.")
+                }
+            }
+        });
+        assert!(!validate_pre_merge_header(&invalid_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn master_accumulator_invalidates_invalid_current_header_records() {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        // get header from current epoch
+        let mut last_header = headers[9999].clone();
+        // invalidate header by changing timestamp
+        last_header.timestamp = 100;
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(!validate_pre_merge_header(&last_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    fn get_mainnet_master_acc() -> MasterAccumulator {
+        let master_acc = fs::read("./src/assets/macc.txt").unwrap();
+        let master_acc = String::from_utf8_lossy(&master_acc);
+        serde_json::from_str(&master_acc).unwrap()
+    }
+
+    fn get_header(number: u64) -> Header {
+        // centrally sourced from infura
+        // decentrally sourced data
+        match number {
+            0 => rlp::decode(&hex::decode("f90214a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0d7f8974fb5ac78d9ac099b9ad5018bedc2ce0a72dad1827a1709da30580f0544a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000850400000000808213888080a011bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82faa00000000000000000000000000000000000000000000000000000000000000000880000000000000042").unwrap()).unwrap(),
+            1 => rlp::decode(&hex::decode("f90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec4").unwrap()).unwrap(),
+            2 => rlp::decode(&hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap()).unwrap(),
+            200_000 => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "difficulty": "0x5ae701ab58e",
+                    "extraData": "0xd583010102844765746885676f312e35856c696e7578",
+                    "gasLimit": "0x2fefd8",
+                    "gasUsed": "0x0",
+                    "hash": "0x13ced9eaa49a522d4e7dcf80a739a57dbf08f4ce5efc4edbac86a66d8010f693",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "miner": "0x1dcb8d1f0fcc8cbc8c2d76528e877f915e299fbe",
+                    "mixHash": "0xf9d7884dab1938bd8100a4564a949256aedb8936ad3f72f48eaa679269560a65",
+                    "nonce": "0x3ec79c2d077b8db2",
+                    "number": "0x30d40",
+                    "parentHash": "0x7f27ffbccbbf32b53697930c508137e451e8de080231008d945c6e3ed631b74a",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x21b",
+                    "stateRoot": "0x632964149a2056cb246ccee21838d139516578712f13b2a7cbf0086969d0f4ab",
+                    "timestamp": "0x55ee0295",
+                    "totalDifficulty": "0xa6d43b7e9e3106c",
+                    "transactions": [],
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "uncles": []
+                }
+            })).unwrap(),
+            274_250 => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": {
+                    "difficulty": "0x627994e6210",
+                    "extraData": "0xd583010103844765746885676f312e35856c696e7578",
+                    "gasLimit": "0x2fefd8",
+                    "gasUsed": "0x0",
+                    "hash": "0xb4f1c1bd7ef185e42f1c320914feae592a223ecb17cf38a69911332c2deeeb87",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "miner": "0x1dcb8d1f0fcc8cbc8c2d76528e877f915e299fbe",
+                    "mixHash": "0xe3a0202d881ae78db7cb67a0ed408fa3c33bddbbc425d8eef09f1c615a95350c",
+                    "nonce": "0x35ac916190dea6e1",
+                    "number": "0x42f4a",
+                    "parentHash": "0x3027ac49bd9a63c50971cf1dfe043c049f9251fe2055a304f6e56ae434b99e1c",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x21b",
+                    "stateRoot": "0xe9794d9f8bc2263fb025fc4e042a4cf65b91a26daeb92be1adcf09640bc4b95c",
+                    "timestamp": "0x56019b3b",
+                    "totalDifficulty": "0x10eeedd6856ded84",
+                    "transactions": [],
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "uncles": []
+                }
+            })).unwrap(),
+            _ => panic!("Test failed: header not available"),
+        }
+    }
+
+    //
+    // Testing utils
+    //
+    pub fn add_blocks_to_master_acc(master_acc: &mut MasterAccumulator, count: u64) {
+        let headers = generate_random_headers(count);
+        for header in headers {
+            master_acc.update_accumulator(&header);
+        }
+    }
+
+    pub fn generate_random_headers(count: u64) -> Vec<Header> {
+        (0..count)
+            .collect::<Vec<u64>>()
+            .iter()
+            .map(generate_random_header)
+            .collect()
+    }
+
+    fn generate_random_header(height: &u64) -> Header {
+        Header {
+            parent_hash: H256::random(),
+            uncles_hash: H256::random(),
+            author: H160::random(),
+            state_root: H256::random(),
+            transactions_root: H256::random(),
+            receipts_root: H256::random(),
+            log_bloom: Bloom::zero(),
+            difficulty: U256::from_dec_str("1").unwrap(),
+            number: *height,
+            gas_limit: U256::from_dec_str("1").unwrap(),
+            gas_used: U256::from_dec_str("1").unwrap(),
+            timestamp: 1,
+            extra_data: vec![],
+            mix_hash: None,
+            nonce: None,
+            base_fee_per_gas: None,
+        }
     }
 }
