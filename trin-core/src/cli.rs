@@ -1,5 +1,6 @@
-use std::{env, ffi::OsString, net::SocketAddr};
+use std::{env, ffi::OsString, net::SocketAddr, str::FromStr};
 
+use ethereum_types::H256;
 use structopt::StructOpt;
 use tracing::info;
 
@@ -14,6 +15,8 @@ pub const STATE_NETWORK: &str = "state";
 const DEFAULT_SUBNETWORKS: &str = "history";
 pub const DEFAULT_STORAGE_CAPACITY: &str = "100000"; // 100mb
 pub const DEFAULT_TRUSTED_PROVIDER: &str = "infura";
+pub const DEFAULT_MASTER_ACC_HASH: &str =
+    "0xe35cb3b1acac4c0ba71a2c76b51b81ff8689ff5c9d9b5d3ea1976ea4bf248b05";
 
 #[derive(StructOpt, Debug, PartialEq, Clone)]
 #[structopt(
@@ -130,10 +133,11 @@ pub struct TrinConfig {
     pub geth_url: Option<String>,
 
     #[structopt(
-        long = "bridge",
-        help = "Activate to run this node in bridge mode (experimental)."
+        long = "trusted-master-acc-hash",
+        help = "Hash to use for pre-merge master accumulator. defaults to...",
+        default_value = DEFAULT_MASTER_ACC_HASH,
     )]
-    pub bridge: bool,
+    pub trusted_master_acc_hash: H256,
 }
 
 impl Default for TrinConfig {
@@ -157,7 +161,7 @@ impl Default for TrinConfig {
             ephemeral: false,
             trusted_provider: TrustedProviderType::Infura,
             geth_url: None,
-            bridge: false,
+            trusted_master_acc_hash: H256::from_str(DEFAULT_MASTER_ACC_HASH).unwrap(),
         }
     }
 }

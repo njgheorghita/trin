@@ -1,16 +1,27 @@
 use std::{thread, time};
 
 use serde_json::{json, Value};
+use ssz::{Decode, Encode};
 use tracing::{error, info};
+use tree_hash::TreeHash;
 
 use crate::{
+    generate_trin_config,
     jsonrpc::{
         make_ipc_request, validate_portal_offer, JsonRpcRequest, HISTORY_CONTENT_KEY,
         HISTORY_CONTENT_VALUE,
     },
-    Peertest, PeertestConfig,
+    launch_node, Peertest, PeertestConfig,
 };
-use trin_core::jsonrpc::types::Params;
+use trin_core::{
+    jsonrpc::types::Params,
+    portalnet::storage::PortalStorage,
+    portalnet::types::content_key::{
+        HistoryContentKey, MasterAccumulator as MasterAccumulatorKey, SszNone,
+    },
+    types::accumulator::{add_blocks_to_master_acc, MasterAccumulator},
+    utils::bytes::{hex_decode, hex_encode},
+};
 
 pub fn test_offer_accept(peertest_config: PeertestConfig, peertest: &Peertest) {
     info!("Testing OFFER/ACCEPT flow");
@@ -72,4 +83,82 @@ pub fn test_offer_accept(peertest_config: PeertestConfig, peertest: &Peertest) {
         "The received content {}, must match the expected {}",
         HISTORY_CONTENT_VALUE, received_content_str,
     );
+}
+
+// unwraps
+pub async fn test_bootstrap_master_accumulator(
+    _peertest_config: PeertestConfig,
+    peertest: &Peertest,
+) {
+    info!("Testing Bootstrap Master Accumulator");
+    let latest_acc_content_key: Vec<u8> =
+        HistoryContentKey::MasterAccumulator(MasterAccumulatorKey::Latest(SszNone::new())).into();
+    let latest_acc_content_key = hex_encode(latest_acc_content_key);
+
+    // Validate that nodes are bootstrapped with trusted master acc by default
+    let master_acc_request = JsonRpcRequest {
+        method: "portal_historyLocalContent".to_string(),
+        id: 11,
+        params: Params::Array(vec![Value::String(latest_acc_content_key.clone())]),
+    };
+    // bootnode only?
+    let master_acc_response =
+        make_ipc_request(&peertest.bootnode.web3_ipc_path, &master_acc_request).unwrap();
+    let master_acc_response = hex_decode(master_acc_response.as_str().unwrap()).unwrap();
+    let master_acc_response = MasterAccumulator::from_ssz_bytes(&master_acc_response).unwrap();
+    let default_master_acc = PortalStorage::default_trusted_master_acc();
+    let default_master_acc = MasterAccumulator::from_ssz_bytes(&default_master_acc).unwrap();
+    assert_eq!(master_acc_response, default_master_acc);
+
+    // Validate that nodes can specify to use a specific master acc
+
+    // todo: update to larger master_acc's once utp bugs are sorted
+    // generate a master_acc
+    let mut custom_master_acc = MasterAccumulator::default();
+    add_blocks_to_master_acc(&mut custom_master_acc, 3);
+
+    // Store custom master_acc inside all nodes
+    // store under masterhash key
+    let custom_master_acc_ssz = hex_encode(custom_master_acc.as_ssz_bytes());
+    let masterhash_key: Vec<u8> = HistoryContentKey::MasterAccumulator(
+        MasterAccumulatorKey::MasterHash(custom_master_acc.tree_hash_root()),
+    )
+    .into();
+    let masterhash_key = hex_encode(masterhash_key);
+    let store_request = JsonRpcRequest {
+        method: "portal_historyStore".to_string(),
+        id: 11,
+        params: Params::Array(vec![
+            Value::String(masterhash_key),
+            Value::String(custom_master_acc_ssz),
+        ]),
+    };
+    let store_result = make_ipc_request(&peertest.bootnode.web3_ipc_path, &store_request).unwrap();
+    assert_eq!(store_result.as_str().unwrap(), "true");
+    let store_result = make_ipc_request(&peertest.nodes[0].web3_ipc_path, &store_request).unwrap();
+    assert_eq!(store_result.as_str().unwrap(), "true");
+
+    // Bootstrap new node with custom master acc root hash
+    // Validate that it gets set as the node's latest master acc
+    let bootnode_enr = Some(&peertest.bootnode.enr);
+    // use large id for now...
+    let mut new_node_config = generate_trin_config(100, bootnode_enr);
+    new_node_config.trusted_master_acc_hash = custom_master_acc.tree_hash_root();
+    let new_node = launch_node(new_node_config).await.unwrap();
+
+    // Validate that new node hash custom master acc
+    let master_acc_request = JsonRpcRequest {
+        method: "portal_historyLocalContent".to_string(),
+        id: 11,
+        params: Params::Array(vec![Value::String(latest_acc_content_key.to_string())]),
+    };
+
+    let master_acc_response =
+        make_ipc_request(&new_node.web3_ipc_path, &master_acc_request).unwrap();
+    let master_acc_response = hex_decode(master_acc_response.as_str().unwrap()).unwrap();
+    let master_acc = MasterAccumulator::from_ssz_bytes(&master_acc_response).unwrap();
+    assert_eq!(master_acc, custom_master_acc);
+
+    // handle exit for newly created node
+    new_node.exiter.exit();
 }

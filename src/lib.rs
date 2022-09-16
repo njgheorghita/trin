@@ -62,7 +62,7 @@ pub async fn run_trin(
         PortalStorageConfig::new(trin_config.kb.into(), discovery.local_enr().node_id());
 
     // Initialize validation oracle
-    let header_oracle = HeaderOracle::new(trusted_provider.clone());
+    let header_oracle = HeaderOracle::new(trusted_provider.clone(), storage_config.clone());
     let header_oracle = Arc::new(RwLock::new(header_oracle));
 
     debug!("Selected networks to spawn: {:?}", trin_config.networks);
@@ -162,6 +162,12 @@ pub async fn run_trin(
     if let Some(network) = state_network_task {
         tokio::spawn(async { network.await });
     }
+
+    // Spawn task to bootstrap our header oracle's master accumulator
+    tokio::spawn(async move {
+        let mut lock = header_oracle.write().await;
+        lock.bootstrap(trin_config.trusted_master_acc_hash).await;
+    });
 
     let _ = live_server_rx.recv().await;
     live_server_rx.close();

@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use ethereum_types::U256;
+use ethereum_types::{Bloom, H160, H256, U256};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ssz::{Decode, Encode};
@@ -316,13 +316,52 @@ pub struct HeaderRecord {
     block_hash: tree_hash::Hash256,
     total_difficulty: U256,
 }
+
+//
+// Testing utils
+//
+pub fn add_blocks_to_master_acc(master_acc: &mut MasterAccumulator, count: u64) {
+    let headers = generate_random_headers(count);
+    for header in headers {
+        master_acc.update_accumulator(&header);
+    }
+}
+
+pub fn generate_random_headers(count: u64) -> Vec<Header> {
+    (0..count)
+        .collect::<Vec<u64>>()
+        .iter()
+        .map(generate_random_header)
+        .collect()
+}
+
+fn generate_random_header(height: &u64) -> Header {
+    Header {
+        parent_hash: H256::random(),
+        uncles_hash: H256::random(),
+        author: H160::random(),
+        state_root: H256::random(),
+        transactions_root: H256::random(),
+        receipts_root: H256::random(),
+        log_bloom: Bloom::zero(),
+        difficulty: U256::from_dec_str("1").unwrap(),
+        number: *height,
+        gas_limit: U256::from_dec_str("1").unwrap(),
+        gas_used: U256::from_dec_str("1").unwrap(),
+        timestamp: 1,
+        extra_data: vec![],
+        mix_hash: None,
+        nonce: None,
+        base_fee_per_gas: None,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use std::fs;
     use std::str::FromStr;
 
-    use ethereum_types::{Bloom, H160, H256};
     use rstest::*;
 
     use crate::jsonrpc::types::RecursiveFindContentParams;
@@ -549,45 +588,6 @@ mod test {
                 }
             })).unwrap(),
             _ => panic!("Test failed: header not available"),
-        }
-    }
-
-    //
-    // Testing utils
-    //
-    pub fn add_blocks_to_master_acc(master_acc: &mut MasterAccumulator, count: u64) {
-        let headers = generate_random_headers(count);
-        for header in headers {
-            master_acc.update_accumulator(&header);
-        }
-    }
-
-    pub fn generate_random_headers(count: u64) -> Vec<Header> {
-        (0..count)
-            .collect::<Vec<u64>>()
-            .iter()
-            .map(generate_random_header)
-            .collect()
-    }
-
-    fn generate_random_header(height: &u64) -> Header {
-        Header {
-            parent_hash: H256::random(),
-            uncles_hash: H256::random(),
-            author: H160::random(),
-            state_root: H256::random(),
-            transactions_root: H256::random(),
-            receipts_root: H256::random(),
-            log_bloom: Bloom::zero(),
-            difficulty: U256::from_dec_str("1").unwrap(),
-            number: *height,
-            gas_limit: U256::from_dec_str("1").unwrap(),
-            gas_used: U256::from_dec_str("1").unwrap(),
-            timestamp: 1,
-            extra_data: vec![],
-            mix_hash: None,
-            nonce: None,
-            base_fee_per_gas: None,
         }
     }
 }

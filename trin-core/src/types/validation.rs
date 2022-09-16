@@ -1,17 +1,16 @@
-use std::fs;
+use std::sync::{Arc, RwLock};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
 use ethereum_types::H256;
 use serde_json::{json, Value};
+use ssz::Decode;
 use tokio::sync::mpsc;
+use tracing::log::{info, warn};
+use tree_hash::TreeHash;
 
 use crate::{
-    portalnet::types::content_key::IdentityContentKey,
-    types::{
-        accumulator::{validate_pre_merge_header, MasterAccumulator},
-        header::Header,
-    },
+    jsonrpc::endpoints::HistoryEndpoint,
     jsonrpc::types::{HistoryJsonRpcRequest, Params},
     portalnet::{
         storage::{ContentStore, PortalStorage, PortalStorageConfig},
@@ -21,11 +20,15 @@ use crate::{
         },
     },
     types::{accumulator::{validate_pre_merge_header, MasterAccumulator}, header::Header},
-    utils::{bytes::hex_decode, provider::TrustedProvider},
+    utils::{
+        bytes::{hex_decode, hex_encode},
+        provider::TrustedProvider,
+    },
 };
 
 // todo: update once mainnet master_acc has synced
 pub const MERGE_BLOCK_NUMBER: u64 = 274300u64;
+//15_537_393
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
@@ -38,17 +41,16 @@ pub struct HeaderOracle {
     // determining which subnetworks are actually available.
     pub history_jsonrpc_tx: Option<mpsc::UnboundedSender<HistoryJsonRpcRequest>>,
     pub master_acc: MasterAccumulator,
+    pub portal_storage: Arc<RwLock<PortalStorage>>,
 }
 
 impl HeaderOracle {
-    pub fn new(trusted_provider: TrustedProvider) -> Self {
-        let master_acc = fs::read("./src/assets/macc.txt").unwrap();
-        let master_acc = String::from_utf8_lossy(&master_acc);
-        let master_acc: MasterAccumulator = serde_json::from_str(&master_acc).unwrap();
+    pub fn new(trusted_provider: TrustedProvider, storage_config: PortalStorageConfig) -> Self {
+        let portal_storage = Arc::new(RwLock::new(PortalStorage::new(storage_config).unwrap()));
         Self {
             trusted_provider,
             history_jsonrpc_tx: None,
-            master_accumulator: master_acc,
+            master_accumulator: MasterAccumulator::default(),
             portal_storage,
         }
     }
@@ -106,6 +108,80 @@ impl HeaderOracle {
                 .unwrap()
                 .put(latest_macc_content_key, &latest_local_macc.as_ssz_bytes());
         }
+    }
+
+    pub async fn bootstrap(&mut self, trusted_master_acc_hash: H256) {
+        // Get latest master accumulator from AccumulatorDB
+        let latest_master_acc_content_key =
+            HistoryContentKey::MasterAccumulator(MasterAccumulatorKey::Latest(SszNone::new()));
+        let latest_local_master_acc: &Option<Vec<u8>> = &self
+            .portal_storage
+            .as_ref()
+            .read()
+            .unwrap()
+            .get(&latest_master_acc_content_key)
+            .unwrap_or(None);
+        let latest_local_master_acc = match latest_local_master_acc {
+            Some(val) => MasterAccumulator::from_ssz_bytes(val).unwrap_or_default(),
+            None => {
+                warn!("Unable to load default trusted master acc from portal storage");
+                return;
+            }
+        };
+        if latest_local_master_acc.tree_hash_root() == trusted_master_acc_hash {
+            info!("Bootstrapping header oracle with default master accumulator.");
+            self.master_acc = latest_local_master_acc;
+            return;
+        }
+
+        // lookup up custom master acc from network
+        let content_key: Vec<u8> = HistoryContentKey::MasterAccumulator(
+            MasterAccumulatorKey::MasterHash(trusted_master_acc_hash),
+        )
+        .into();
+        let content_key = hex_encode(content_key);
+        let endpoint = HistoryEndpoint::RecursiveFindContent;
+        let params = Params::Array(vec![json!(content_key)]);
+        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
+        let request = HistoryJsonRpcRequest {
+            endpoint,
+            resp: resp_tx,
+            params,
+        };
+        self.history_jsonrpc_tx().unwrap().send(request).unwrap();
+        let master_acc_ssz = match resp_rx.recv().await {
+            Some(val) => val,
+            None => {
+                warn!("Unable to bootstrap master acc: No response from chain history subnetwork");
+                return;
+            }
+        };
+        let master_acc_ssz = match master_acc_ssz {
+            Ok(result) => result,
+            Err(msg) => {
+                warn!("Unable to bootstrap master acc: Error returned from chain history subnetwork: {msg:?}");
+                return;
+            }
+        };
+        let master_acc_ssz = match master_acc_ssz.as_str() {
+            Some(val) => val,
+            None => {
+                warn!("Unable to bootstrap master acc: Invalid master accumulator received from chain history network");
+                return;
+            }
+        };
+        let trusted_master_acc_ssz = hex_decode(master_acc_ssz).unwrap();
+        let trusted_master_acc =
+            MasterAccumulator::from_ssz_bytes(&trusted_master_acc_ssz).unwrap();
+
+        self.master_acc = trusted_master_acc;
+        let _ = &self
+            .portal_storage
+            .as_ref()
+            .write()
+            .unwrap()
+            .store(&latest_master_acc_content_key, &trusted_master_acc_ssz)
+            .unwrap();
     }
 
     // Currently falls back to trusted provider, to be updated to use canonical block indices network.
@@ -205,13 +281,18 @@ impl Validator<IdentityContentKey> for MockValidator {
 mod test {
     use super::*;
 
+    use discv5::enr::NodeId;
+
     use crate::cli::TrinConfig;
+    use crate::portalnet::storage::PortalStorageConfig;
 
     #[test]
     fn header_oracle_bootstraps_with_frozen_macc() {
+        let node_id = NodeId::random();
         let trin_config = TrinConfig::default();
         let trusted_provider = TrustedProvider::from_trin_config(&trin_config);
-        let header_oracle = HeaderOracle::new(trusted_provider);
+        let storage_config = PortalStorageConfig::new(100, node_id);
+        let header_oracle = HeaderOracle::new(trusted_provider, storage_config);
         assert_eq!(header_oracle.master_acc.latest_height(), MERGE_BLOCK_NUMBER);
     }
 }

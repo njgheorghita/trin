@@ -1,6 +1,7 @@
 use std::{
     convert::TryInto,
     fmt, fs,
+    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,12 +12,15 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rocksdb::{Options, DB};
 use rusqlite::params;
+use ssz::Encode;
+use thiserror::Error;
 use tracing::{debug, error, info};
 
 use super::types::{
     content_key::OverlayContentKey,
     distance::{Distance, Metric, XorMetric},
 };
+use crate::types::accumulator::MasterAccumulator;
 use crate::utils::db::get_data_dir;
 
 // TODO: Replace enum with generic type parameter. This will require that we have a way to
@@ -335,17 +339,28 @@ impl PortalStorage {
         }
     }
 
-    /// Method for storing a given value for a given content-key.
-    fn store(
+    /// store defautl trusted master acc in portal storage, so that we can use the same value for
+    /// jsonrpc "latest" responses & use in header oracle bootstrapping
+    pub fn default_trusted_master_acc() -> Vec<u8> {
+        // todo make path const
+        let mut path = std::env::current_dir().unwrap();
+        path.push("trin-core/src/assets/macc.txt");
+        let file = fs::File::open(path).unwrap();
+        let reader = BufReader::new(file);
+        let master_acc: MasterAccumulator = serde_json::from_reader(reader).unwrap();
+        master_acc.as_ssz_bytes()
+    }
+
+    /// Public method for storing a given value for a given content-key.
+    pub fn store(
         &mut self,
         key: &impl OverlayContentKey,
         value: &Vec<u8>,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<(), PortalStorageError> {
         let content_id = key.content_id();
         let distance_to_content_id = self.distance_to_content_id(&content_id);
 
-        // Always store master accumulators in accumulator db
-        // todo: add logic to accumulator_db to only overwrite if new macc is longer
+        // Always overwrite master accumulators in accumulator db
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
             self.accumulator_db.put(&content_id, value)?;
         } else if distance_to_content_id > self.radius {
@@ -423,6 +438,26 @@ impl PortalStorage {
         }
 
         Ok(())
+    }
+
+    /// Public method for retrieving the stored value for a given content-key.
+    /// If no value exists for the given content-key, Result<None> is returned.
+    pub fn get(&self, key: &impl OverlayContentKey) -> Result<Option<Vec<u8>>, PortalStorageError> {
+        let content_id = key.content_id();
+        if content_id == LATEST_MASTER_ACC_CONTENT_ID {
+            match self.accumulator_db.get(content_id)? {
+                Some(val) => Ok(Some(val)),
+                None => {
+                    let default_trusted_master_acc = Self::default_trusted_master_acc();
+                    let _ = self
+                        .accumulator_db
+                        .put(content_id, default_trusted_master_acc.clone());
+                    Ok(Some(default_trusted_master_acc))
+                }
+            }
+        } else {
+            Ok(self.db.get(content_id)?)
+        }
     }
 
     /// Public method for retrieving the node's current radius.
