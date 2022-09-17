@@ -4,16 +4,22 @@ use std::io::prelude::*;
 
 use anyhow::anyhow;
 use ethereum_types::{Bloom, H160, H256, U256};
-use log::warn;
 use serde::{Deserialize, Serialize};
-use ssz::Encode;
+use serde_json::{json, Value};
+use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
+use tokio::sync::mpsc;
 use tree_hash::{MerkleHasher, TreeHash};
 use tree_hash_derive::TreeHash;
 
-use crate::types::header::Header;
-use crate::utils::bytes::hex_encode;
+use crate::jsonrpc::endpoints::HistoryEndpoint;
+use crate::jsonrpc::types::{HistoryJsonRpcRequest, Params};
+use crate::portalnet::types::content_key::{
+    EpochAccumulator as EpochAccumulatorKey, HistoryContentKey,
+};
+use crate::types::{header::Header, validation::MERGE_BLOCK_NUMBER};
+use crate::utils::bytes::{hex_decode, hex_encode};
 
 /// Number of blocks / epoch
 pub const EPOCH_SIZE: usize = 8192;
@@ -38,10 +44,56 @@ pub struct MasterAccumulator {
     current_epoch: EpochAccumulator,
 }
 
+// todo: remove dead-code exception as MasterAccumulator is connected to HeaderOracle
+#[allow(dead_code)]
 impl MasterAccumulator {
-    pub fn latest_height(&self) -> u64 {
-        let historical_height = self.historical_epochs.epochs.len() as u64 * EPOCH_SIZE as u64;
-        historical_height + self.current_epoch.header_records.len() as u64
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // # of last included block header
+    pub fn height(&self) -> Option<u64> {
+        let count = self.historical_header_count() + self.current_header_count();
+        match count {
+            0 => None,
+            _ => Some(count - 1),
+        }
+    }
+
+    pub fn next_header_height(&self) -> u64 {
+        match self.height() {
+            Some(val) => val + 1,
+            None => 0,
+        }
+    }
+
+    fn current_header_count(&self) -> u64 {
+        u64::try_from(self.current_epoch.header_records.len())
+            .expect("Header Record count should not overflow u64")
+    }
+
+    fn epoch_number(&self) -> u64 {
+        u64::try_from(self.historical_epochs.epochs.len())
+            .expect("Historical Epoch count should not overflow u64")
+    }
+
+    fn historical_header_count(&self) -> u64 {
+        self.epoch_number() * EPOCH_SIZE as u64
+    }
+
+    fn get_epoch_index(&self, header: &Header) -> u64 {
+        header.number / EPOCH_SIZE as u64
+    }
+
+    fn exists_in_current_epoch(&self, header: &Header) -> bool {
+        let current_epoch_block_min = match self.historical_header_count() {
+            0 => match header.number {
+                0u64 => return true,
+                _ => 0,
+            },
+            _ => self.historical_header_count() - 1,
+        };
+        header.number > current_epoch_block_min && header.number < self.next_header_height()
     }
 
     /// Update the master accumulator state with a new header.
@@ -50,17 +102,25 @@ impl MasterAccumulator {
     /// preceding epoch's merkle root to historical epochs.
     // as defined in:
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
-    pub fn update_accumulator(&mut self, new_block_header: &Header) {
-        // check that new header is next
-        // todo: test
-        //if new_block_header.number != self.latest_height() + 1 {
-        if new_block_header.number != self.latest_height() + 1{
-            warn!("FUCK");
-            return;
+    pub fn update_accumulator(&mut self, new_header: &Header) {
+        if new_header.number > MERGE_BLOCK_NUMBER {
+            panic!("Invalid master acc update: Header is post-merge.");
+        }
+        match self.height() {
+            Some(val) => {
+                if new_header.number != (val + 1) {
+                    panic!("Invalid master acc update: Header is not at the expected height.");
+                }
+            }
+            None => {
+                if new_header.number != 0 {
+                    panic!("Invalid master acc update: Header is not at the expected height.");
+                }
+            }
         }
 
         // get the previous total difficulty
-        let last_total_difficulty = match self.current_epoch.header_records.len() {
+        let last_total_difficulty = match self.current_header_count() {
             // genesis
             0 => U256::zero(),
             _ => {
@@ -73,80 +133,143 @@ impl MasterAccumulator {
         };
 
         // check if the epoch accumulator is full
-        if self.current_epoch.header_records.len() == EPOCH_SIZE {
-            // write epoch to disk
-            let data = serde_json::to_string(&self.current_epoch).unwrap();
-            let raw_epoch = self.current_epoch.as_ssz_bytes();
-            let encoded_epoch = hex_encode(raw_epoch);
-            let filename = format!("./maccs/{}.txt", self.current_epoch.tree_hash_root());
-            fs::write(filename, encoded_epoch).expect("fuck");
+        if self.height().is_some() {
+            let height = self.height().unwrap();
+            if height > 0 && (height + 1) % EPOCH_SIZE as u64 == 0 {
+                // moving current to history
 
-            // write metrics log
-            let mut log_data = format!("time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap());
-            log_data.push_str("  -  ");
-            log_data.push_str(&self.latest_height().to_string());
-            let log_filename = "./maccs/metrics.txt";
-            let mut file = OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(log_filename)
-                .unwrap();
-            if let Err(e) = writeln!(file, "{}", log_data) {
-                println!("Couldn't write to file: {}", e);
+                //
+                //
+                // writing things
+                // write epoch to disk
+                let data = serde_json::to_string(&self.current_epoch).unwrap();
+                let raw_epoch = self.current_epoch.as_ssz_bytes();
+                let encoded_epoch = hex_encode(raw_epoch);
+                let filename = format!("./maccs/{}.txt", self.current_epoch.tree_hash_root());
+                fs::write(filename, encoded_epoch).expect("fuck");
+
+                // write metrics log
+                let mut log_data = format!("time: {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap());
+                log_data.push_str("  -  ");
+                log_data.push_str(&self.height().unwrap().to_string());
+                let log_filename = "./maccs/metrics.txt";
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .open(log_filename)
+                    .unwrap();
+                if let Err(e) = writeln!(file, "{}", log_data) {
+                    println!("Couldn't write to file: {}", e);
+                }
+
+                // write epoch index log
+                let mut index_data = format!("{:?},{:?}", self.height().unwrap(), self.current_epoch.tree_hash_root());
+                let index_filename = "./maccs/epoch_index.txt";
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .open(index_filename)
+                    .unwrap();
+                if let Err(e) = writeln!(file, "{}", index_data) {
+                    println!("Couldn't write to file: {}", e);
+                }
+                // done writing things
+                //
+                //
+                //
+
+                // compute the final hash for this epoch
+                let epoch_hash = self.current_epoch.tree_hash_root();
+                // append the hash for this epoch to the list of historical epochs
+                self.historical_epochs
+                    .epochs
+                    .push(epoch_hash)
+                    .expect("Invalid accumulator state, more historical epochs than allowed.");
+                // initialize a new empty epoch
+                self.current_epoch = EpochAccumulator {
+                    header_records: HeaderRecordList::empty(),
+                };
             }
-
-            // write epoch index log
-            let mut index_data = format!("{:?},{:?}", self.latest_height(), self.current_epoch.tree_hash_root());
-            let index_filename = "./maccs/epoch_index.txt";
-            let mut file = OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(index_filename)
-                .unwrap();
-            if let Err(e) = writeln!(file, "{}", index_data) {
-                println!("Couldn't write to file: {}", e);
-            }
-
-            // compute the final hash for this epoch
-            let epoch_hash = self.current_epoch.tree_hash_root();
-            // append the hash for this epoch to the list of historical epochs
-            self.historical_epochs
-                .epochs
-                .push(epoch_hash)
-                .expect("Invalid accumulator state, more historical epochs than allowed.");
-            // write old epoch acc to disk
-            // todo: update this or remove it
-
-
-            // initialize a new empty epoch
-            self.current_epoch = EpochAccumulator {
-                header_records: HeaderRecordList::empty(),
-            };
         }
 
         // construct the concise record for the new header and add it to the current epoch
         let header_record = HeaderRecord {
-            block_hash: new_block_header.hash(),
-            total_difficulty: last_total_difficulty + new_block_header.difficulty,
+            block_hash: new_header.hash(),
+            total_difficulty: last_total_difficulty + new_header.difficulty,
         };
         self.current_epoch
             .header_records
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
     }
+}
 
-    fn validate(header: Header) -> anyhow::Result<()> {
-
-        let macc = std::fs::read("./macc.txt").unwrap();
-        let raw_macc = String::from_utf8_lossy(&macc);
-        let macc: Self = serde_json::from_str(&raw_macc).unwrap();
-
-        if header.number > macc.latest_height() {
-            return Err(anyhow!("fuck"))
+/// Validation function for pre merge headers that will use the master accumulator to validate
+/// whether or not the given header is canonical. Returns true if header is validated, false if
+/// header is invalidated, or an err if it is unable to validate the header using the master
+/// accumulator.
+pub async fn validate_pre_merge_header(
+    header: &Header,
+    master_acc: &MasterAccumulator,
+    history_jsonrpc_tx: mpsc::UnboundedSender<HistoryJsonRpcRequest>,
+) -> anyhow::Result<bool> {
+    if header.number > MERGE_BLOCK_NUMBER {
+        return Err(anyhow!("Unable to validate post-merge block."));
+    }
+    if header.number >= master_acc.next_header_height() {
+        return Err(anyhow!("Unable to validate future header."));
+    }
+    match master_acc.exists_in_current_epoch(header) {
+        true => {
+            let rel_index = header.number - master_acc.historical_header_count();
+            let verified_block_hash =
+                master_acc.current_epoch.header_records[rel_index as usize].block_hash;
+            println!("XXX: {:?}", verified_block_hash == header.hash());
+            Ok(verified_block_hash == header.hash())
         }
+        false => {
+            let epoch_index = master_acc.get_epoch_index(header);
+            let epoch_hash = master_acc.historical_epochs.epochs[epoch_index as usize];
+            let content_key: Vec<u8> =
+                HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash }).into();
+            let content_key = hex_encode(content_key);
+            let endpoint = HistoryEndpoint::RecursiveFindContent;
+            let params = Params::Array(vec![json!(content_key)]);
+            let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
+            let request = HistoryJsonRpcRequest {
+                endpoint,
+                resp: resp_tx,
+                params,
+            };
+            history_jsonrpc_tx.send(request).unwrap();
 
-        println!("macc latest height: {:?}", macc.latest_height());
-        Ok(())
+            let epoch_acc_ssz = match resp_rx.recv().await {
+                Some(val) => val,
+                None => return Err(anyhow!("No response from chain history subnetwork")),
+            };
+            let epoch_acc_ssz = match epoch_acc_ssz {
+                Ok(result) => result,
+                Err(msg) => {
+                    return Err(anyhow!(
+                        "Error returned from chain history subnetwork: {:?}",
+                        msg
+                    ))
+                }
+            };
+            let epoch_acc_ssz = match epoch_acc_ssz.as_str() {
+                Some(val) => val,
+                None => {
+                    return Err(anyhow!(
+                        "Invalid epoch accumulator received from chain history network"
+                    ))
+                }
+            };
+            let epoch_acc_ssz = hex_decode(epoch_acc_ssz).unwrap();
+            let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc_ssz).unwrap();
+            let header_index = (header.number as u64) - epoch_index * (EPOCH_SIZE as u64);
+            let header_record = epoch_acc.header_records[header_index as usize];
+            Ok(header_record.block_hash == header.hash())
+        }
     }
 }
 
@@ -263,68 +386,60 @@ pub struct HeaderRecord {
 //
 // Testing utils
 //
-pub fn generate_random_macc(block_height: u32) -> MasterAccumulator {
-    let epoch_height = block_height / EPOCH_SIZE as u32;
-    let current_height = block_height % EPOCH_SIZE as u32;
-    let mut random_historical_epochs: Vec<H256> = vec![];
-    for _h in 0..epoch_height {
-        random_historical_epochs.push(H256::random());
-    }
-    let mut random_header_records: Vec<HeaderRecord> = vec![];
-    for h in 0..current_height {
-        random_header_records.push(HeaderRecord {
-            block_hash: tree_hash::Hash256::random(),
-            total_difficulty: U256::from(h + (epoch_height * EPOCH_SIZE as u32)),
-        });
-    }
-    MasterAccumulator {
-        historical_epochs: HistoricalEpochs {
-            epochs: HistoricalEpochsList::from(random_historical_epochs),
-        },
-        current_epoch: EpochAccumulator {
-            header_records: HeaderRecordList::from(random_header_records),
-        },
+pub fn add_blocks_to_master_acc(master_acc: &mut MasterAccumulator, count: u64) {
+    let next_header_height = match master_acc.height() {
+        Some(val) => val + 1,
+        None => 0,
+    };
+    let headers = generate_random_headers(next_header_height, count);
+    for header in headers {
+        master_acc.update_accumulator(&header);
     }
 }
 
-pub fn add_blocks_to_macc(macc: &mut MasterAccumulator, count: u32) {
-    for _height in 0..count {
-        let new_header = Header {
-            parent_hash: H256::random(),
-            uncles_hash: H256::random(),
-            author: H160::random(),
-            state_root: H256::random(),
-            transactions_root: H256::random(),
-            receipts_root: H256::random(),
-            log_bloom: Bloom::zero(),
-            difficulty: U256::from_dec_str("1").unwrap(),
-            number: (macc.latest_height() + 1_u64) as u64,
-            gas_limit: U256::from_dec_str("1").unwrap(),
-            gas_used: U256::from_dec_str("1").unwrap(),
-            timestamp: 1,
-            extra_data: vec![],
-            mix_hash: None,
-            nonce: None,
-            base_fee_per_gas: None,
-        };
-        macc.update_accumulator(&new_header);
+pub fn generate_random_headers(height: u64, count: u64) -> Vec<Header> {
+    let headers: Vec<Header> = (height..height + count)
+        .collect::<Vec<u64>>()
+        .iter()
+        .map(generate_random_header)
+        .collect();
+    headers
+}
+
+fn generate_random_header(height: &u64) -> Header {
+    Header {
+        parent_hash: H256::random(),
+        uncles_hash: H256::random(),
+        author: H160::random(),
+        state_root: H256::random(),
+        transactions_root: H256::random(),
+        receipts_root: H256::random(),
+        log_bloom: Bloom::zero(),
+        difficulty: U256::from_dec_str("1").unwrap(),
+        number: *height,
+        gas_limit: U256::from_dec_str("1").unwrap(),
+        gas_used: U256::from_dec_str("1").unwrap(),
+        timestamp: 1,
+        extra_data: vec![],
+        mix_hash: None,
+        nonce: None,
+        base_fee_per_gas: None,
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs;
+    use std::str::FromStr;
+
+    use rstest::*;
+
+    use crate::jsonrpc::types::RecursiveFindContentParams;
 
     #[test]
     fn master_accumulator_update() {
-        let block_0_rlp = hex::decode("f90214a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0d7f8974fb5ac78d9ac099b9ad5018bedc2ce0a72dad1827a1709da30580f0544a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000850400000000808213888080a011bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82faa00000000000000000000000000000000000000000000000000000000000000000880000000000000042").unwrap();
-        let block_1_rlp = hex::decode("f90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec4").unwrap();
-        let block_2_rlp = hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap();
-
-        let block_0_header: Header = rlp::decode(&block_0_rlp).unwrap();
-        let block_1_header: Header = rlp::decode(&block_1_rlp).unwrap();
-        let block_2_header: Header = rlp::decode(&block_2_rlp).unwrap();
-        let headers = vec![block_0_header, block_1_header, block_2_header];
+        let headers = vec![get_header(0), get_header(1), get_header(2)];
 
         // test values sourced from:
         // https://github.com/status-im/nimbus-eth1/blob/d4d4e8c28fec8aab4a4c8e919ff31a6a4970c580/fluffy/tests/test_accumulator.nim
@@ -349,8 +464,354 @@ mod test {
             });
     }
 
+    // tomorrow:
+    // respond to barnabus
+    // restart mainnet macc sync if necessary
+    // get this pr wrapped up
+    // finish script for all macc conversion handling
+    //
+    // monday:
+    // get bridge node & docker
+    // bridge node epoch_acc and master_acc formatting
+    // distribute accs via google drive (bridge(hex) / bin)
+    //
+    //
+    //
+
     #[test]
-    fn master_accumulator_validate() {
-        MasterAccumulator::validate();
+    fn test_macc_attrs() {
+        let mut master_acc = MasterAccumulator::default();
+        let epoch_size = EPOCH_SIZE as u64;
+        // start off with an empty macc
+        assert!(master_acc.height().is_none());
+        assert_eq!(master_acc.current_header_count(), 0);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add genesis block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 0);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // ff to next epoch boundary
+        add_blocks_to_master_acc(&mut master_acc, epoch_size - 2);
+        assert_eq!(master_acc.height().unwrap(), epoch_size - 1);
+        assert_eq!(master_acc.current_header_count(), epoch_size);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), epoch_size);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), epoch_size + 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // ff to next epoch boundary
+        add_blocks_to_master_acc(&mut master_acc, epoch_size - 2);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size - 1);
+        assert_eq!(master_acc.current_header_count(), epoch_size);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), 2 * epoch_size);
+        assert_eq!(master_acc.epoch_number(), 2);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size + 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), 2 * epoch_size);
+        assert_eq!(master_acc.epoch_number(), 2);
     }
+
+    #[tokio::test]
+    async fn master_accumulator_validates_current_epoch_header() {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(0, 10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        let random_header = &headers[9999];
+        let (tx, _) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(
+            validate_pre_merge_header(random_header, &master_acc, tx.clone())
+                .await
+                .unwrap()
+        );
+        // test first header in epoch
+        let random_header = &headers[8192];
+        assert!(validate_pre_merge_header(random_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn master_accumulator_invalidates_invalid_current_epoch_header() {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(0, 10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        // get header from current epoch
+        let mut last_header = headers[9999].clone();
+        // invalidate header by changing timestamp
+        last_header.timestamp = 100;
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(!validate_pre_merge_header(&last_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[rstest]
+    // next block in chain
+    #[case(10_000)]
+    // distant block in chain
+    #[case(10_000_000)]
+    #[tokio::test]
+    #[should_panic(expected = "Unable to validate future header.")]
+    async fn master_accumulator_cannot_validate_future_header(#[case] test_height: u64) {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(0, 10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        let historical_header = &headers[0];
+        assert!(!master_acc.exists_in_current_epoch(&historical_header));
+
+        // first header in current epoch
+        let current_header = &headers[EPOCH_SIZE];
+        assert!(master_acc.exists_in_current_epoch(current_header));
+
+        // generate next block in the chain, which has not yet been added to the accumulator
+        let future_header = generate_random_header(&test_height);
+        assert!(!master_acc.exists_in_current_epoch(&future_header));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        validate_pre_merge_header(&future_header, &master_acc, tx.clone())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn mainnet_master_accumulator_validates_current_epoch_header() {
+        let master_acc = get_mainnet_master_acc();
+        let header = get_header(MERGE_BLOCK_NUMBER);
+        assert!(master_acc.exists_in_current_epoch(&header));
+        let (tx, _) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(validate_pre_merge_header(&header, &master_acc, tx.clone())
+            .await
+            .unwrap());
+    }
+
+    //#[rstest]
+    //#[case(0)]
+    //#[case(1)]
+    //#[case(2)]
+    //#[case(200_000)]
+    //#[tokio::test]
+    //async fn mainnet_master_accumulator_validates_historical_epoch_headers(#[case] block_number: u64) {
+    //let master_acc = get_mainnet_master_acc();
+    //let header = get_header(block_number);
+    //let (tx, mut rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+    //tokio::spawn(async move {
+    //match rx.recv().await {
+    //Some(request) => {
+    //let response = RecursiveFindContentParams::try_from(request.params).unwrap();
+    //let response = hex_encode(response.content_key.to_vec());
+    //// comment
+    //let epoch_acc_hash = response.trim_start_matches("0x03");
+    //let epoch_acc_hash = H256::from_str(epoch_acc_hash).unwrap();
+    //let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.txt");
+    //let epoch_acc = fs::read_to_string(epoch_acc_path).unwrap();
+    //let content: Value = json!(epoch_acc);
+    //let _ = request.resp.send(Ok(content));
+    //}
+    //None => {
+    //panic!("Test run failed: Unable to get response from master_acc validation.")
+    //}
+    //}
+    //});
+    //assert!(validate_pre_merge_header(&header, &master_acc, tx)
+    //.await
+    //.unwrap());
+    //}
+    //#[tokio::test]
+    //async fn mainnet_master_accumulator_invalidates_invalid_historical_headers() {
+    //let master_acc = get_mainnet_master_acc();
+    //let mut invalid_header = get_header(200_000);
+    //invalid_header.timestamp = 1000;
+    //let (tx, mut rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+    //tokio::spawn(async move {
+    //match rx.recv().await {
+    //Some(request) => {
+    //let response = RecursiveFindContentParams::try_from(request.params).unwrap();
+    //let response = hex_encode(response.content_key.to_vec());
+    //let epoch_acc_hash = response.trim_start_matches("0x03");
+    //let epoch_acc_hash = H256::from_str(epoch_acc_hash).unwrap();
+    //let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.txt");
+    //let epoch_acc = fs::read_to_string(epoch_acc_path).unwrap();
+    //let content: Value = json!(epoch_acc);
+    //let _ = request.resp.send(Ok(content));
+    //}
+    //None => {
+    //panic!("Test run failed: Unable to get response from master_acc validation.")
+    //}
+    //}
+    //});
+    //assert!(!validate_pre_merge_header(&invalid_header, &master_acc, tx)
+    //.await
+    //.unwrap());
+    //}
+
+    fn get_mainnet_master_acc() -> MasterAccumulator {
+        let master_acc = fs::read("./src/assets/merge_macc.bin").unwrap();
+        let master_acc = MasterAccumulator::from_ssz_bytes(&master_acc).unwrap();
+        //assert_eq!(master_acc.height().unwrap(), MERGE_BLOCK_NUMBER);
+        master_acc
+    }
+
+    fn get_header(number: u64) -> Header {
+        // centrally sourced from infura
+        // decentrally sourced data
+        match number {
+            0 => rlp::decode(&hex::decode("f90214a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a0d7f8974fb5ac78d9ac099b9ad5018bedc2ce0a72dad1827a1709da30580f0544a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000850400000000808213888080a011bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82faa00000000000000000000000000000000000000000000000000000000000000000880000000000000042").unwrap()).unwrap(),
+            1 => rlp::decode(&hex::decode("f90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec4").unwrap()).unwrap(),
+            2 => rlp::decode(&hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap()).unwrap(),
+            200_000 => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "difficulty": "0x5ae701ab58e",
+                    "extraData": "0xd583010102844765746885676f312e35856c696e7578",
+                    "gasLimit": "0x2fefd8",
+                    "gasUsed": "0x0",
+                    "hash": "0x13ced9eaa49a522d4e7dcf80a739a57dbf08f4ce5efc4edbac86a66d8010f693",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "miner": "0x1dcb8d1f0fcc8cbc8c2d76528e877f915e299fbe",
+                    "mixHash": "0xf9d7884dab1938bd8100a4564a949256aedb8936ad3f72f48eaa679269560a65",
+                    "nonce": "0x3ec79c2d077b8db2",
+                    "number": "0x30d40",
+                    "parentHash": "0x7f27ffbccbbf32b53697930c508137e451e8de080231008d945c6e3ed631b74a",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x21b",
+                    "stateRoot": "0x632964149a2056cb246ccee21838d139516578712f13b2a7cbf0086969d0f4ab",
+                    "timestamp": "0x55ee0295",
+                    "totalDifficulty": "0xa6d43b7e9e3106c",
+                    "transactions": [],
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "uncles": []
+                }
+            })).unwrap(),
+            274_250 => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": {
+                    "difficulty": "0x627994e6210",
+                    "extraData": "0xd583010103844765746885676f312e35856c696e7578",
+                    "gasLimit": "0x2fefd8",
+                    "gasUsed": "0x0",
+                    "hash": "0xb4f1c1bd7ef185e42f1c320914feae592a223ecb17cf38a69911332c2deeeb87",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "miner": "0x1dcb8d1f0fcc8cbc8c2d76528e877f915e299fbe",
+                    "mixHash": "0xe3a0202d881ae78db7cb67a0ed408fa3c33bddbbc425d8eef09f1c615a95350c",
+                    "nonce": "0x35ac916190dea6e1",
+                    "number": "0x42f4a",
+                    "parentHash": "0x3027ac49bd9a63c50971cf1dfe043c049f9251fe2055a304f6e56ae434b99e1c",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x21b",
+                    "stateRoot": "0xe9794d9f8bc2263fb025fc4e042a4cf65b91a26daeb92be1adcf09640bc4b95c",
+                    "timestamp": "0x56019b3b",
+                    "totalDifficulty": "0x10eeedd6856ded84",
+                    "transactions": [],
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "uncles": []
+                }
+            })).unwrap(),
+            MERGE_BLOCK_NUMBER => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": {
+                    "baseFeePerGas": "0xa1a4e5f06",
+                    "difficulty": "0x27472e1db3626a",
+                    "extraData": "0xe4b883e5bda9e7a59ee4bb99e9b1bc460021",
+                    "gasLimit": "0x1c9c380",
+                    "gasUsed": "0x1c9a205",
+                    "hash": "0x55b11b918355b1ef9c5db810302ebad0bf2544255b530cdce90674d5887bb286",
+                    "logsBloom": "0x00000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000008000000000000000000000000000000000000000000000000020000000000000000000800000000004000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008400000000001002000000000000000000000000000000000002000000020000000020000000000000000000000000000000000000000040000000000000000000000000",
+                    "miner": "0x829bd824b016326a401d083b33d092293333a830",
+                    "mixHash": "0x4cbec03dddd4b939730a7fe6048729604d4266e82426d472a2b2024f3cc4043f",
+                    "nonce": "0x62a3ee77461d4fc9",
+                    "number": "0xed14f1",
+                    "parentHash": "0x2b3ea3cd4befcab070812443affb08bf17a91ce382c714a536ca3cacab82278b",
+                    "receiptsRoot": "0xbaa842cfd552321a9c2450576126311e071680a1258032219c6490b663c1dab8",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x664",
+                    "stateRoot": "0x4919dafa6ac8becfbbd0c2808f6c9511a057c21e42839caff5dfb6d3ef514951",
+                    "timestamp": "0x6322c962",
+                    "totalDifficulty": "0xc70d815d562d3cfa955",
+                    "transactions": ["0xec9db5bfbcd30ad2e3070b626ed4f78abce88687c5d1eb23464242be5edcb537"],
+                    "transactionsRoot": "0xdd5eec02b019ff76e359b09bfa19395a2a0e97bc01e70d8d5491e640167c96a8",
+                    "uncles": []
+                }
+            })).unwrap(),
+
+            _ => panic!("Test failed: header not available"),
+        }
+    }
+
+    use std::io::prelude::*;
+
+    //#[test]
+    //pub fn sexy_test() {
+    //let mut count = 0;
+    //let paths = fs::read_dir("./src/assets/").unwrap();
+    //for path in paths {
+    //let path = path.unwrap();
+    //if path.file_name().into_string().unwrap().starts_with("0x") {
+    //let bin_path = format!("./src/assets/bin_{}", path.file_name().into_string().unwrap());
+    //let mut file = std::fs::File::create(bin_path).unwrap();
+    //let epoch_acc = fs::read_to_string(path.path()).unwrap();
+    //let epoch_acc = hex_decode(&epoch_acc).unwrap();
+    ////let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap();
+
+    //file.write_all(&epoch_acc);
+    //count += 1;
+    //} else if path.file_name().into_string().unwrap().starts_with("macc") {
+    //let bin_path = format!("./src/assets/bin_{}", path.file_name().into_string().unwrap());
+    //let mut file = std::fs::File::create(bin_path).unwrap();
+    //let macc = fs::read_to_string(path.path()).unwrap();
+    //let mut macc: MasterAccumulator = serde_json::from_str(&macc).unwrap();
+    //assert!(macc.height().unwrap() >= MERGE_BLOCK_NUMBER);
+    //file.write_all(&macc.as_ssz_bytes());
+    //while macc.height().unwrap() > MERGE_BLOCK_NUMBER {
+    //let length = macc.current_epoch.header_records.len();
+    //let mut old_hrs: Vec<HeaderRecord> = macc.current_epoch.header_records.into();
+    //old_hrs.remove(length-1);
+    //let new_epoch = VariableList::<HeaderRecord, typenum::U131072>::from(old_hrs);
+    //macc.current_epoch.header_records = new_epoch;
+    //}
+    //let merge_path = format!("./src/assets/merge_{}.bin", path.file_name().into_string().unwrap());
+    //let mut merge_file = std::fs::File::create(merge_path).unwrap();
+    //merge_file.write_all(&macc.as_ssz_bytes());
+    //count += 1;
+    //}
+    //}
+    //assert!(count == 3);
+    //assert_eq!(0, 1);
+    /*}*/
 }

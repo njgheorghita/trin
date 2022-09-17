@@ -274,7 +274,7 @@ impl HistoryRequestHandler {
                     }
                     let latest_accumulator: MasterAccumulator = accumulators
                         .into_iter()
-                        .max_by_key(|acc| acc.latest_height())
+                        .max_by_key(|acc| acc.next_header_height())
                         .unwrap_or_default();
                     // todo: compare that master accumulators all contain matching validation data
                     let response = Ok(json!(latest_accumulator));

@@ -90,6 +90,8 @@ impl TrustedProvider {
     }
 }
 
+pub const MERGE_BLOCK_NUMBER: u64 = 15_537_393u64;
+
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
 /// on to infura.
@@ -160,28 +162,6 @@ impl HeaderOracle {
 
         // Sample latest accumulator from 10 network peers
         let mut latest_network_macc = self.sample_network_macc().await;
-
-        // max_threshold for bootstrapping
-        let max_height_diff = 16;
-        let mut current_delta =
-            self.get_current_height().unwrap() - latest_network_macc.latest_height();
-        // check overflow?
-        /*        while current_delta > max_height_diff {*/
-        //info!("macc height not caught up to threshold");
-        //latest_network_macc = self.sample_network_macc().await;
-        //current_delta =
-        //self.get_current_height().unwrap() - latest_network_macc.latest_height();
-        /*}*/
-
-        // Update portal storage with latest network macc if network macc is latest
-        if latest_local_macc.latest_height() < latest_network_macc.latest_height() {
-            let _ = &self
-                .portal_storage
-                .as_ref()
-                .write()
-                .unwrap()
-                .store(&latest_macc_content_key, &latest_local_macc.as_ssz_bytes());
-        }
     }
 
     // Request 10 maccs from network peers
@@ -191,47 +171,6 @@ impl HeaderOracle {
         match self.dispatch_chain_history_request(endpoint, params).await {
             Ok(val) => serde_json::from_value(val).unwrap_or_default(),
             Err(_) => MasterAccumulator::default(),
-        }
-    }
-
-    pub async fn geth_build_macc(&mut self) {
-        // update portal storage w/ macc
-        // update portal storage w/ epoch acc?
-        // offer epoch accs.
-        let xxx = fs::read("./macc.txt").unwrap();
-        let raw_macc = String::from_utf8_lossy(&xxx);
-        let macc: MasterAccumulator = serde_json::from_str(&raw_macc).unwrap();
-        self.master_accumulator = macc;
-        let mut mainnet_height = self.get_current_height().unwrap();
-        let mut current_delta = mainnet_height - self.master_accumulator.latest_height();
-        info!("macc height: {:?}", self.master_accumulator.latest_height());
-        info!("main height: {:?}", mainnet_height);
-        info!("delta: {:?}", current_delta);
-        thread::sleep(time::Duration::from_secs(10));
-        loop {
-            while current_delta > 0 {
-                // use chain history network to build accumulator
-                let next_header = self
-                    .trusted_get_block(Some(self.master_accumulator.latest_height() + 1))
-                    .unwrap();
-                self.master_accumulator.update_accumulator(&next_header);
-                current_delta = mainnet_height - self.master_accumulator.latest_height();
-                // print to file
-                let latest_height = self.master_accumulator.latest_height();
-                if latest_height % 100 == 0 {
-                    let mut data = format!("number: {:?}", latest_height);
-                    data.push_str("---------");
-                    data.push_str(
-                        serde_json::to_string(&self.master_accumulator)
-                            .unwrap()
-                            .as_str(),
-                    );
-                    fs::write("./macc.txt", data).expect("fuck");
-                }
-            }
-            thread::sleep(time::Duration::from_secs(10));
-            mainnet_height = self.get_current_height().unwrap();
-            current_delta = mainnet_height - self.master_accumulator.latest_height();
         }
     }
 
@@ -245,10 +184,7 @@ impl HeaderOracle {
         };
         self.master_accumulator = macc;
         let mut mainnet_height = self.get_current_height().unwrap();
-        let mut current_delta = mainnet_height - self.master_accumulator.latest_height();
-        info!("macc height: {:?}", self.master_accumulator.latest_height());
-        info!("main height: {:?}", mainnet_height);
-        info!("delta: {:?}", current_delta);
+        info!("macc height: {:?}", self.master_accumulator.height());
         thread::sleep(time::Duration::from_secs(10));
         loop {
             tokio::select! {
@@ -257,78 +193,78 @@ impl HeaderOracle {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
                 Ok(resp) = self.fancy_1() => {
                     for header in resp {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
                 Ok(resp) = self.fancy_2() => {
                     for header in resp {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
                 Ok(resp) = self.fancy_3() => {
                     for header in resp {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
                 Ok(resp) = self.fancy_4() => {
                     for header in resp {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
                 Ok(resp) = self.fancy_5() => {
                     for header in resp {
                         self.master_accumulator.update_accumulator(&header);
                     }
                     // print to file
-                    let latest_height = self.master_accumulator.latest_height();
-                    if latest_height % 100 == 0 {
+                    let height = self.master_accumulator.next_header_height();
+                    if height % 100 == 0 {
                         let data = serde_json::to_string(&self.master_accumulator)
                             .unwrap();
                         fs::write("./maccs/macc.txt", data.as_str()).expect("fuck");
                     }
-                    info!("macc height: {:?}", self.master_accumulator.latest_height());
+                    info!("macc height: {:?}", self.master_accumulator.next_header_height());
                 }
             }
         }
@@ -337,7 +273,7 @@ impl HeaderOracle {
 
     async fn fancy_0(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-geth-prysm.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
@@ -349,7 +285,7 @@ impl HeaderOracle {
 
     async fn fancy_1(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-geth-nimbus.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
@@ -361,7 +297,7 @@ impl HeaderOracle {
 
     async fn fancy_2(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-geth-teku.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
@@ -373,7 +309,7 @@ impl HeaderOracle {
 
     async fn fancy_3(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-geth-lighthouse.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
@@ -385,7 +321,7 @@ impl HeaderOracle {
 
     async fn fancy_4(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-geth-lodestar.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
@@ -397,51 +333,13 @@ impl HeaderOracle {
 
     async fn fancy_5(&self) -> anyhow::Result<Vec<Header>> {
         let url = "https://mainnet-erigon-lighthouse.ethpandaops.io/".to_string();
-        let block_number = Some(self.master_accumulator.latest_height() + 1);
+        let block_number = Some(self.master_accumulator.next_header_height());
         let response = tokio::task::spawn_blocking(move ||
             HeaderOracle::trusted_get_block_fancy(block_number, url).unwrap()
         ).await;
         match response {
             Ok(val) => Ok(val.clone()),
             Err(_) => Err(anyhow!("fuck"))
-        }
-    }
-
-
-    pub async fn infura_follow_head(&mut self) {
-        let infura_url = build_infura_ws_url_from_env();
-        let request = r#"{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}"#;
-        let url = Url::parse(&infura_url).unwrap();
-        let mut client = ClientBuilder::from_url(&url).connect(None).unwrap();
-        client.send_message(&Message::text(request)).unwrap();
-        for message in client.incoming_messages() {
-            if let Ok(OwnedMessage::Text(val)) = message {
-                let response: Value = serde_json::from_str(&val).unwrap();
-                if let Some(val) = response.get("params") {
-                    if let Ok(val) = Header::from_get_block_jsonrpc_response(val.clone()) {
-                        let header = val;
-                        println!("found header: {:?}", header);
-                        self.master_accumulator.update_accumulator(&header);
-                        // offer to network
-                        // can we use PopulatedOffer here?
-                        let content_key: Vec<u8> = HistoryContentKey::BlockHeader(BlockHeader {
-                            chain_id: 1,
-                            block_hash: header.hash().to_fixed_bytes(),
-                        })
-                        .into();
-                        let header = hex_encode(rlp::encode(&header));
-                        let content_key = hex_encode(content_key);
-                        let endpoint = HistoryEndpoint::Offer;
-                        let params = Params::Array(vec![json!(content_key), json!(header)]);
-                        let _ = self.dispatch_chain_history_request(endpoint, params).await;
-                        // todo: every X blocks update master acc in portal storage
-                        // todo: occasional validation checks against peers maccs
-                        // todo: only update accumulatordb if latest version is longer
-                    } else {
-                        println!("unable to decode infura header");
-                    }
-                }
-            }
         }
     }
 
@@ -542,7 +440,7 @@ impl HeaderOracle {
         let params = Params::Array(vec![json!("latest"), json!(false)]);
         let method = "eth_getBlockByNumber".to_string();
         let response = self.trusted_provider.dispatch_request(method, params)?;
-        let latest_height = match response["result"]["number"].as_str() {
+        let height = match response["result"]["number"].as_str() {
             Some(val) => val.trim_start_matches("0x"),
             None => {
                 return Err(anyhow!(
@@ -551,7 +449,7 @@ impl HeaderOracle {
                 ));
             }
         };
-        Ok(u64::from_str_radix(latest_height, 16)?)
+        Ok(u64::from_str_radix(height, 16)?)
     }
 
     pub fn get_header_by_hash(&self, block_hash: H256) -> anyhow::Result<Header> {
