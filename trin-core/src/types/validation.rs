@@ -13,7 +13,7 @@ use crate::{
     jsonrpc::endpoints::HistoryEndpoint,
     jsonrpc::types::{HistoryJsonRpcRequest, Params},
     portalnet::{
-        storage::{ContentStore, PortalStorage, PortalStorageConfig},
+        storage::{PortalStorage, PortalStorageConfig},
         types::content_key::{
             HistoryContentKey, IdentityContentKey, MasterAccumulator as MasterAccumulatorKey,
             SszNone,
@@ -26,9 +26,8 @@ use crate::{
     },
 };
 
-// todo: update once mainnet master_acc has synced
-pub const MERGE_BLOCK_NUMBER: u64 = 274300u64;
-//15_537_393
+pub const MERGE_BLOCK_NUMBER: u64 = 28999u64;
+//pub const MERGE_BLOCK_NUMBER: u64 = 15_537_393u64;
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
@@ -50,63 +49,8 @@ impl HeaderOracle {
         Self {
             trusted_provider,
             history_jsonrpc_tx: None,
-            master_accumulator: MasterAccumulator::default(),
+            master_acc: MasterAccumulator::default(),
             portal_storage,
-        }
-    }
-
-    /// 1. Sample latest accumulator from 10 peers
-    /// 2. Get latest master accumulator from portal storage
-    /// 3. Update PortalStorage if new accumulator from network is latest
-    /// 4. Set current master accumulator to latest
-    pub async fn bootstrap(&mut self) {
-        // Get latest master accumulator from AccumulatorDB
-        let latest_macc_content_key =
-            HistoryContentKey::MasterAccumulator(MasterAccumulatorKey::Latest(SszNone::new()));
-        let latest_local_macc: &Option<Vec<u8>> = &self
-            .portal_storage
-            .as_ref()
-            .read()
-            .unwrap()
-            .get(&latest_macc_content_key)
-            .unwrap_or(None);
-        let latest_local_macc = match latest_local_macc {
-            Some(val) => MasterAccumulator::from_ssz_bytes(val).unwrap_or_default(),
-            None => MasterAccumulator::default(),
-        };
-
-        // Sample latest accumulator from 10 network peers
-        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<Result<Value, String>>();
-        let request = HistoryJsonRpcRequest {
-            endpoint: HistoryEndpoint::SampleLatestMasterAccumulator,
-            resp: resp_tx,
-            params: Params::None,
-        };
-        let history_jsonrpc_tx = match self.history_jsonrpc_tx.as_ref() {
-            Some(val) => val,
-            None => {
-                // use latest_local_macc if history jsonrpc is unavailable
-                self.master_accumulator = latest_local_macc;
-                return;
-            }
-        };
-        history_jsonrpc_tx.send(request).unwrap();
-        let latest_network_macc: MasterAccumulator = match resp_rx.recv().await {
-            Some(val) => serde_json::from_value(val.unwrap()).unwrap_or_default(),
-            None => MasterAccumulator::default(),
-        };
-
-        // Set current macc to latest macc
-        self.master_accumulator = latest_local_macc.clone();
-
-        // Update portal storage with latest network macc if network macc is latest
-        if latest_local_macc.latest_height() < latest_network_macc.latest_height() {
-            let _ = &self
-                .portal_storage
-                .as_ref()
-                .write()
-                .unwrap()
-                .put(latest_macc_content_key, &latest_local_macc.as_ssz_bytes());
         }
     }
 
@@ -287,12 +231,16 @@ mod test {
     use crate::portalnet::storage::PortalStorageConfig;
 
     #[test]
-    fn header_oracle_bootstraps_with_frozen_macc() {
+    fn header_oracle_bootstraps_with_frozen_master_acc() {
         let node_id = NodeId::random();
         let trin_config = TrinConfig::default();
         let trusted_provider = TrustedProvider::from_trin_config(&trin_config);
         let storage_config = PortalStorageConfig::new(100, node_id);
         let header_oracle = HeaderOracle::new(trusted_provider, storage_config);
-        assert_eq!(header_oracle.master_acc.latest_height(), MERGE_BLOCK_NUMBER);
+        // test hashes !!!!!!!
+        assert_eq!(
+            header_oracle.master_acc.height().unwrap(),
+            MERGE_BLOCK_NUMBER
+        );
     }
 }

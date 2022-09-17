@@ -1,7 +1,6 @@
 use std::{
     convert::TryInto,
     fmt, fs,
-    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -12,15 +11,12 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rocksdb::{Options, DB};
 use rusqlite::params;
-use ssz::Encode;
-use thiserror::Error;
 use tracing::{debug, error, info};
 
 use super::types::{
     content_key::OverlayContentKey,
     distance::{Distance, Metric, XorMetric},
 };
-use crate::types::accumulator::MasterAccumulator;
 use crate::utils::db::get_data_dir;
 
 // TODO: Replace enum with generic type parameter. This will require that we have a way to
@@ -344,11 +340,8 @@ impl PortalStorage {
     pub fn default_trusted_master_acc() -> Vec<u8> {
         // todo make path const
         let mut path = std::env::current_dir().unwrap();
-        path.push("trin-core/src/assets/macc.txt");
-        let file = fs::File::open(path).unwrap();
-        let reader = BufReader::new(file);
-        let master_acc: MasterAccumulator = serde_json::from_reader(reader).unwrap();
-        master_acc.as_ssz_bytes()
+        path.push("trin-core/src/assets/merge_macc.bin");
+        std::fs::read(path).unwrap()
     }
 
     /// Public method for storing a given value for a given content-key.
@@ -356,7 +349,7 @@ impl PortalStorage {
         &mut self,
         key: &impl OverlayContentKey,
         value: &Vec<u8>,
-    ) -> Result<(), PortalStorageError> {
+    ) -> Result<(), ContentStoreError> {
         let content_id = key.content_id();
         let distance_to_content_id = self.distance_to_content_id(&content_id);
 
@@ -442,7 +435,7 @@ impl PortalStorage {
 
     /// Public method for retrieving the stored value for a given content-key.
     /// If no value exists for the given content-key, Result<None> is returned.
-    pub fn get(&self, key: &impl OverlayContentKey) -> Result<Option<Vec<u8>>, PortalStorageError> {
+    pub fn get(&self, key: &impl OverlayContentKey) -> Result<Option<Vec<u8>>, ContentStoreError> {
         let content_id = key.content_id();
         if content_id == LATEST_MASTER_ACC_CONTENT_ID {
             match self.accumulator_db.get(content_id)? {

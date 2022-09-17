@@ -6,7 +6,6 @@ use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
 use tokio::sync::mpsc;
-use tracing::log::warn;
 use tree_hash::{MerkleHasher, TreeHash};
 use tree_hash_derive::TreeHash;
 
@@ -48,12 +47,23 @@ impl MasterAccumulator {
         Self::default()
     }
 
-    pub fn latest_height(&self) -> u64 {
-        let historical_height = self.epoch_number() * EPOCH_SIZE as u64;
-        historical_height + self.header_record_count()
+    // # of last included block header
+    pub fn height(&self) -> Option<u64> {
+        let count = self.historical_header_count() + self.current_header_count();
+        match count {
+            0 => None,
+            _ => Some(count - 1),
+        }
     }
 
-    fn header_record_count(&self) -> u64 {
+    pub fn next_header_height(&self) -> u64 {
+        match self.height() {
+            Some(val) => val + 1,
+            None => 0,
+        }
+    }
+
+    fn current_header_count(&self) -> u64 {
         u64::try_from(self.current_epoch.header_records.len())
             .expect("Header Record count should not overflow u64")
     }
@@ -61,6 +71,25 @@ impl MasterAccumulator {
     fn epoch_number(&self) -> u64 {
         u64::try_from(self.historical_epochs.epochs.len())
             .expect("Historical Epoch count should not overflow u64")
+    }
+
+    fn historical_header_count(&self) -> u64 {
+        self.epoch_number() * EPOCH_SIZE as u64
+    }
+
+    fn get_epoch_index(&self, header: &Header) -> u64 {
+        header.number / EPOCH_SIZE as u64
+    }
+
+    fn exists_in_current_epoch(&self, header: &Header) -> bool {
+        let current_epoch_block_min = match self.historical_header_count() {
+            0 => match header.number {
+                0u64 => return true,
+                _ => 0,
+            },
+            _ => self.historical_header_count() - 1,
+        };
+        header.number > current_epoch_block_min && header.number < self.next_header_height()
     }
 
     /// Update the master accumulator state with a new header.
@@ -71,16 +100,14 @@ impl MasterAccumulator {
     // https://github.com/ethereum/portal-network-specs/blob/e807eb09d2859016e25b976f082735d3aceceb8e/history-network.md#the-header-accumulator
     fn update_accumulator(&mut self, new_header: &Header) {
         if new_header.number > MERGE_BLOCK_NUMBER {
-            warn!("Invalid master acc update: Header is post-merge.");
-            return;
+            panic!("Invalid master acc update: Header is post-merge.");
         }
-        if new_header.number != self.latest_height() {
-            warn!("Invalid master acc update: Header is not at the expected height.");
-            return;
+        if new_header.number != self.next_header_height() {
+            panic!("Invalid master acc update: Header is not at the expected height.");
         }
 
         // get the previous total difficulty
-        let last_total_difficulty = match self.current_epoch.header_records.len() {
+        let last_total_difficulty = match self.current_header_count() {
             // genesis
             0 => U256::zero(),
             _ => {
@@ -93,7 +120,7 @@ impl MasterAccumulator {
         };
 
         // check if the epoch accumulator is full
-        if self.current_epoch.header_records.len() == EPOCH_SIZE {
+        if self.next_header_height() > 0 && self.next_header_height() % EPOCH_SIZE as u64 == 0 {
             // compute the final hash for this epoch
             let epoch_hash = self.current_epoch.tree_hash_root();
             // append the hash for this epoch to the list of historical epochs
@@ -117,31 +144,11 @@ impl MasterAccumulator {
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
     }
-
-    fn historical_header_count(&self) -> u64 {
-        self.epoch_number() * EPOCH_SIZE as u64
-    }
-
-    fn get_epoch_index(&self, header: &Header) -> u64 {
-        header.number / EPOCH_SIZE as u64
-    }
-
-    fn is_header_in_current_epoch(&self, header: &Header) -> bool {
-        let current_epoch_block_min = match self.historical_header_count() {
-            0 => match header.number {
-                0u64 => return true,
-                _ => 0,
-            },
-            _ => self.historical_header_count() - 1,
-        };
-        header.number > current_epoch_block_min
-            && header.number <= current_epoch_block_min + EPOCH_SIZE as u64
-    }
 }
 
 /// Validation function for pre merge headers that will use the master accumulator to validate
 /// whether or not the given header is canonical. Returns true if header is validated, false if
-/// header is invalidated, and an err if it wasn't able to validate the header using the master
+/// header is invalidated, or an err if it is unable to validate the header using the master
 /// accumulator.
 pub async fn validate_pre_merge_header(
     header: &Header,
@@ -151,12 +158,12 @@ pub async fn validate_pre_merge_header(
     if header.number > MERGE_BLOCK_NUMBER {
         return Err(anyhow!("Unable to validate post-merge block."));
     }
-    match master_acc.is_header_in_current_epoch(header) {
+    if header.number >= master_acc.next_header_height() {
+        return Err(anyhow!("Unable to validate future header."));
+    }
+    match master_acc.exists_in_current_epoch(header) {
         true => {
             let rel_index = header.number - master_acc.historical_header_count();
-            if rel_index > (master_acc.header_record_count() - 1u64) {
-                return Err(anyhow!("Unable to validate future header."));
-            };
             let verified_block_hash =
                 master_acc.current_epoch.header_records[rel_index as usize].block_hash;
             Ok(verified_block_hash == header.hash())
@@ -178,27 +185,15 @@ pub async fn validate_pre_merge_header(
             history_jsonrpc_tx.send(request).unwrap();
 
             let epoch_acc_ssz = match resp_rx.recv().await {
-                Some(val) => val,
+                Some(val) => {
+                    val.map_err(|msg| anyhow!("Chain history subnetwork request error: {:?}", msg))?
+                }
                 None => return Err(anyhow!("No response from chain history subnetwork")),
             };
-            let epoch_acc_ssz = match epoch_acc_ssz {
-                Ok(result) => result,
-                Err(msg) => {
-                    return Err(anyhow!(
-                        "Error returned from chain history subnetwork: {:?}",
-                        msg
-                    ))
-                }
-            };
-            let epoch_acc_ssz = match epoch_acc_ssz.as_str() {
-                Some(val) => val,
-                None => {
-                    return Err(anyhow!(
-                        "Invalid epoch accumulator received from chain history network"
-                    ))
-                }
-            };
-            let epoch_acc_ssz = hex_decode(epoch_acc_ssz).unwrap();
+            let epoch_acc_ssz = epoch_acc_ssz
+                .as_str()
+                .ok_or_else(|| anyhow!("Invalid epoch acc received from chain history network"))?;
+            let epoch_acc_ssz = hex_decode(epoch_acc_ssz)?;
             let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc_ssz).unwrap();
             let header_index = (header.number as u64) - epoch_index * (EPOCH_SIZE as u64);
             let header_record = epoch_acc.header_records[header_index as usize];
@@ -321,14 +316,14 @@ pub struct HeaderRecord {
 // Testing utils
 //
 pub fn add_blocks_to_master_acc(master_acc: &mut MasterAccumulator, count: u64) {
-    let headers = generate_random_headers(count);
+    let headers = generate_random_headers(master_acc.next_header_height(), count);
     for header in headers {
         master_acc.update_accumulator(&header);
     }
 }
 
-pub fn generate_random_headers(count: u64) -> Vec<Header> {
-    (0..count)
+pub fn generate_random_headers(height: u64, count: u64) -> Vec<Header> {
+    (height..height + count)
         .collect::<Vec<u64>>()
         .iter()
         .map(generate_random_header)
@@ -393,10 +388,77 @@ mod test {
             });
     }
 
+    // monday:
+    // get bridge node & docker
+    // bridge node epoch_acc and master_acc formatting
+    // distribute accs via google drive (bridge(hex) / bin)
+    //
+    //
+    //
+
+    #[test]
+    fn test_macc_attrs() {
+        let mut master_acc = MasterAccumulator::default();
+        let epoch_size = EPOCH_SIZE as u64;
+        // start off with an empty macc
+        assert!(master_acc.height().is_none());
+        assert_eq!(master_acc.current_header_count(), 0);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add genesis block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 0);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // ff to next epoch boundary
+        add_blocks_to_master_acc(&mut master_acc, epoch_size - 2);
+        assert_eq!(master_acc.height().unwrap(), epoch_size - 1);
+        assert_eq!(master_acc.current_header_count(), epoch_size);
+        assert_eq!(master_acc.historical_header_count(), 0);
+        assert_eq!(master_acc.epoch_number(), 0);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), epoch_size);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), epoch_size + 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // ff to next epoch boundary
+        add_blocks_to_master_acc(&mut master_acc, epoch_size - 2);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size - 1);
+        assert_eq!(master_acc.current_header_count(), epoch_size);
+        assert_eq!(master_acc.historical_header_count(), epoch_size);
+        assert_eq!(master_acc.epoch_number(), 1);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size);
+        assert_eq!(master_acc.current_header_count(), 1);
+        assert_eq!(master_acc.historical_header_count(), 2 * epoch_size);
+        assert_eq!(master_acc.epoch_number(), 2);
+        // add block to macc
+        add_blocks_to_master_acc(&mut master_acc, 1);
+        assert_eq!(master_acc.height().unwrap(), 2 * epoch_size + 1);
+        assert_eq!(master_acc.current_header_count(), 2);
+        assert_eq!(master_acc.historical_header_count(), 2 * epoch_size);
+        assert_eq!(master_acc.epoch_number(), 2);
+    }
+
     #[tokio::test]
     async fn master_accumulator_validates_current_epoch_header() {
         let mut master_acc = MasterAccumulator::default();
-        let headers = generate_random_headers(10000);
+        let headers = generate_random_headers(0, 10000);
         for header in &headers {
             master_acc.update_accumulator(header);
         }
@@ -415,10 +477,57 @@ mod test {
     }
 
     #[tokio::test]
+    async fn master_accumulator_invalidates_invalid_current_epoch_header() {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(0, 10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        // get header from current epoch
+        let mut last_header = headers[9999].clone();
+        // invalidate header by changing timestamp
+        last_header.timestamp = 100;
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        assert!(!validate_pre_merge_header(&last_header, &master_acc, tx)
+            .await
+            .unwrap());
+    }
+
+    #[rstest]
+    // next block in chain
+    #[case(10_000)]
+    // distant block in chain
+    #[case(10_000_000)]
+    #[tokio::test]
+    #[should_panic(expected = "Unable to validate future header.")]
+    async fn master_accumulator_cannot_validate_future_header(#[case] test_height: u64) {
+        let mut master_acc = MasterAccumulator::default();
+        let headers = generate_random_headers(0, 10000);
+        for header in &headers {
+            master_acc.update_accumulator(header);
+        }
+        let historical_header = &headers[0];
+        assert!(!master_acc.exists_in_current_epoch(historical_header));
+
+        // first header in current epoch
+        let current_header = &headers[EPOCH_SIZE];
+        assert!(master_acc.exists_in_current_epoch(current_header));
+
+        // generate next block in the chain, which has not yet been added to the accumulator
+        let future_header = generate_random_header(&test_height);
+        assert!(!master_acc.exists_in_current_epoch(&future_header));
+
+        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
+        validate_pre_merge_header(&future_header, &master_acc, tx.clone())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn mainnet_master_accumulator_validates_current_epoch_header() {
         let master_acc = get_mainnet_master_acc();
-        let header = get_header(274_250);
-        assert!(master_acc.is_header_in_current_epoch(&header));
+        let header = get_header(MERGE_BLOCK_NUMBER);
+        assert!(master_acc.exists_in_current_epoch(&header));
         let (tx, _) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
         assert!(validate_pre_merge_header(&header, &master_acc, tx.clone())
             .await
@@ -429,9 +538,11 @@ mod test {
     #[case(0)]
     #[case(1)]
     #[case(2)]
-    #[case(200_000)]
+    //#[case(200_000)]
     #[tokio::test]
-    async fn master_accumulator_validates_historical_epoch_headers(#[case] block_number: u64) {
+    async fn mainnet_master_accumulator_validates_historical_epoch_headers(
+        #[case] block_number: u64,
+    ) {
         let master_acc = get_mainnet_master_acc();
         let header = get_header(block_number);
         let (tx, mut rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
@@ -443,8 +554,9 @@ mod test {
                     // comment
                     let epoch_acc_hash = response.trim_start_matches("0x03");
                     let epoch_acc_hash = H256::from_str(epoch_acc_hash).unwrap();
-                    let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.txt");
-                    let epoch_acc = fs::read_to_string(epoch_acc_path).unwrap();
+                    let epoch_acc_path = format!("./src/assets/{epoch_acc_hash}.bin");
+                    let epoch_acc = fs::read(epoch_acc_path).unwrap();
+                    let epoch_acc = hex_encode(epoch_acc);
                     let content: Value = json!(epoch_acc);
                     let _ = request.resp.send(Ok(content));
                 }
@@ -454,25 +566,6 @@ mod test {
             }
         });
         assert!(validate_pre_merge_header(&header, &master_acc, tx)
-            .await
-            .unwrap());
-    }
-
-    #[tokio::test]
-    async fn master_accumulator_invalidates_future_header() {
-        let mut master_acc = MasterAccumulator::default();
-        add_blocks_to_master_acc(&mut master_acc, 10000);
-        let random_header = generate_random_header(&10000);
-        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
-        // comment
-        assert!(
-            !validate_pre_merge_header(&random_header, &master_acc, tx.clone())
-                .await
-                .unwrap()
-        );
-        // comment
-        let random_header = generate_random_header(&10000000);
-        assert!(!validate_pre_merge_header(&random_header, &master_acc, tx)
             .await
             .unwrap());
     }
@@ -505,27 +598,11 @@ mod test {
             .unwrap());
     }
 
-    #[tokio::test]
-    async fn master_accumulator_invalidates_invalid_current_header_records() {
-        let mut master_acc = MasterAccumulator::default();
-        let headers = generate_random_headers(10000);
-        for header in &headers {
-            master_acc.update_accumulator(header);
-        }
-        // get header from current epoch
-        let mut last_header = headers[9999].clone();
-        // invalidate header by changing timestamp
-        last_header.timestamp = 100;
-        let (tx, _rx) = mpsc::unbounded_channel::<HistoryJsonRpcRequest>();
-        assert!(!validate_pre_merge_header(&last_header, &master_acc, tx)
-            .await
-            .unwrap());
-    }
-
     fn get_mainnet_master_acc() -> MasterAccumulator {
-        let master_acc = fs::read("./src/assets/macc.txt").unwrap();
-        let master_acc = String::from_utf8_lossy(&master_acc);
-        serde_json::from_str(&master_acc).unwrap()
+        let master_acc = fs::read("./src/assets/merge_macc.bin").unwrap();
+        let master_acc = MasterAccumulator::from_ssz_bytes(&master_acc).unwrap();
+        assert_eq!(master_acc.height().unwrap(), MERGE_BLOCK_NUMBER);
+        master_acc
     }
 
     fn get_header(number: u64) -> Header {
@@ -587,6 +664,62 @@ mod test {
                     "uncles": []
                 }
             })).unwrap(),
+            // fake merge block
+            MERGE_BLOCK_NUMBER => Header::from_get_block_jsonrpc_response(json!({
+                "jsonrpc": "2.0",
+                "id": 0,
+                "result": {
+                    "difficulty": "0x109bf3b3450",
+                    "extraData": "0x476574682f76312e302e302f6c696e75782f676f312e342e32",
+                    "gasLimit": "0x1388",
+                    "gasUsed": "0x0",
+                    "hash": "0x609af272f9cacdd80853292bf0302a47bdef4a43e60ac0e261ed8a33972e0bf6",
+                    "logsBloom": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+                    "miner": "0xf927a40c8b7f6e07c5af7fa2155b4864a4112b13",
+                    "mixHash": "0x3e7cf6f461112290addcfb54169b116a72733169c5f4af7aa3e62a264d6d24bd",
+                    "nonce": "0xaca02fce679212a1",
+                    "number": "0x7147",
+                    "parentHash": "0xd74578e2fbe3ed5955f2e301cbd7e407b816ec3fcfd3d412772c3243f4fc0b4a",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "size": "0x21c",
+                    "stateRoot": "0x5602cfbdd93a1443bdb9176dcb00ba54f2e03bdbd0c4e698f1f63c7f72d0c29d",
+                    "timestamp": "0x55bfd384",
+                    "totalDifficulty": "0x48004ed795b41f",
+                    "transactions": [],
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "uncles": []
+                }
+            })).unwrap(),
+            // actual merge block
+/*            MERGE_BLOCK_NUMBER => Header::from_get_block_jsonrpc_response(json!({*/
+                //"jsonrpc": "2.0",
+                //"id": 0,
+                //"result": {
+                    //"baseFeePerGas": "0xa1a4e5f06",
+                    //"difficulty": "0x27472e1db3626a",
+                    //"extraData": "0xe4b883e5bda9e7a59ee4bb99e9b1bc460021",
+                    //"gasLimit": "0x1c9c380",
+                    //"gasUsed": "0x1c9a205",
+                    //"hash": "0x55b11b918355b1ef9c5db810302ebad0bf2544255b530cdce90674d5887bb286",
+                    //"logsBloom": "0x00000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080000000000000000000000008000000000000000000000000000000000000000000000000020000000000000000000800000000004000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008400000000001002000000000000000000000000000000000002000000020000000020000000000000000000000000000000000000000040000000000000000000000000",
+                    //"miner": "0x829bd824b016326a401d083b33d092293333a830",
+                    //"mixHash": "0x4cbec03dddd4b939730a7fe6048729604d4266e82426d472a2b2024f3cc4043f",
+                    //"nonce": "0x62a3ee77461d4fc9",
+                    //"number": "0xed14f1",
+                    //"parentHash": "0x2b3ea3cd4befcab070812443affb08bf17a91ce382c714a536ca3cacab82278b",
+                    //"receiptsRoot": "0xbaa842cfd552321a9c2450576126311e071680a1258032219c6490b663c1dab8",
+                    //"sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    //"size": "0x664",
+                    //"stateRoot": "0x4919dafa6ac8becfbbd0c2808f6c9511a057c21e42839caff5dfb6d3ef514951",
+                    //"timestamp": "0x6322c962",
+                    //"totalDifficulty": "0xc70d815d562d3cfa955",
+                    //"transactions": ["0xec9db5bfbcd30ad2e3070b626ed4f78abce88687c5d1eb23464242be5edcb537"],
+                    //"transactionsRoot": "0xdd5eec02b019ff76e359b09bfa19395a2a0e97bc01e70d8d5491e640167c96a8",
+                    //"uncles": []
+                //}
+            /*})).unwrap(),*/
+
             _ => panic!("Test failed: header not available"),
         }
     }

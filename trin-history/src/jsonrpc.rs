@@ -16,13 +16,8 @@ use trin_core::{
     },
     portalnet::{
         storage::ContentStore,
-        types::{
-            content_key::{HistoryContentKey, MasterAccumulator as MasterAccumulatorKey, SszNone},
-            messages::Content,
-        },
-        Enr,
+        types::content_key::HistoryContentKey,
     },
-    types::accumulator::MasterAccumulator,
     utils::bytes::hex_encode,
 };
 
