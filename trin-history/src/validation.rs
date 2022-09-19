@@ -233,12 +233,12 @@ mod tests {
         let server = setup_mock_infura_server();
         // RLP encoded block header #669051
         let header_rlp = get_header_rlp();
-        let header_bytelist = ByteList::try_from(header_rlp.clone()).unwrap();
         let mut header: Header = rlp::decode(&header_rlp).expect("error decoding header");
 
         // set invalid block height
         header.number = 669052;
 
+        let header_bytelist = ByteList::from(rlp::encode(&header).to_vec());
         let header_oracle = default_header_oracle(server.url("/get_header"));
         let chain_history_validator = ChainHistoryValidator { header_oracle };
         let content_key = HistoryContentKey::BlockHeader(BlockHeader {
@@ -257,13 +257,13 @@ mod tests {
         let server = setup_mock_infura_server();
         // RLP encoded block header #669051
         let header_rlp = get_header_rlp();
-        let header_bytelist = ByteList::try_from(header_rlp.clone()).unwrap();
         let mut header: Header = rlp::decode(&header_rlp).expect("error decoding header");
 
         // set invalid block gaslimit
         // valid gaslimit = 3141592
         header.gas_limit = U256::from(3141591);
 
+        let header_bytelist = ByteList::from(rlp::encode(&header).to_vec());
         let header_oracle = default_header_oracle(server.url("/get_header"));
         let chain_history_validator = ChainHistoryValidator { header_oracle };
         let content_key = HistoryContentKey::BlockHeader(BlockHeader {

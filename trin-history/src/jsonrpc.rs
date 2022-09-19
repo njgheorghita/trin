@@ -14,10 +14,7 @@ use trin_core::{
         },
         utils::bucket_entries_to_json,
     },
-    portalnet::{
-        storage::ContentStore,
-        types::content_key::HistoryContentKey,
-    },
+    portalnet::{storage::ContentStore, types::content_key::HistoryContentKey},
     utils::bytes::hex_encode,
 };
 

@@ -261,7 +261,13 @@ impl ContentStore for PortalStorage {
         let content_id = key.content_id();
 
         let value = if content_id == LATEST_MASTER_ACC_CONTENT_ID {
-            self.accumulator_db.get(content_id)?
+            self.accumulator_db.get(content_id)?.or({
+                let default_trusted_master_acc = Self::default_trusted_master_acc();
+                let _ = self
+                    .accumulator_db
+                    .put(content_id, default_trusted_master_acc.clone());
+                Some(default_trusted_master_acc)
+            })
         } else {
             self.db.get(content_id)?
         };
@@ -335,17 +341,16 @@ impl PortalStorage {
         }
     }
 
-    /// store defautl trusted master acc in portal storage, so that we can use the same value for
-    /// jsonrpc "latest" responses & use in header oracle bootstrapping
+    /// Load default trusted master acc, to be used in both "latest" jsonrpc responses
+    /// and for bootstrapping the local header oracle.
     pub fn default_trusted_master_acc() -> Vec<u8> {
-        // todo make path const
-        let mut path = std::env::current_dir().unwrap();
-        path.push("trin-core/src/assets/merge_macc.bin");
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("src/assets/merge_macc.bin");
         std::fs::read(path).unwrap()
     }
 
-    /// Public method for storing a given value for a given content-key.
-    pub fn store(
+    /// Method for storing a given value for a given content-key.
+    fn store(
         &mut self,
         key: &impl OverlayContentKey,
         value: &Vec<u8>,
@@ -431,26 +436,6 @@ impl PortalStorage {
         }
 
         Ok(())
-    }
-
-    /// Public method for retrieving the stored value for a given content-key.
-    /// If no value exists for the given content-key, Result<None> is returned.
-    pub fn get(&self, key: &impl OverlayContentKey) -> Result<Option<Vec<u8>>, ContentStoreError> {
-        let content_id = key.content_id();
-        if content_id == LATEST_MASTER_ACC_CONTENT_ID {
-            match self.accumulator_db.get(content_id)? {
-                Some(val) => Ok(Some(val)),
-                None => {
-                    let default_trusted_master_acc = Self::default_trusted_master_acc();
-                    let _ = self
-                        .accumulator_db
-                        .put(content_id, default_trusted_master_acc.clone());
-                    Ok(Some(default_trusted_master_acc))
-                }
-            }
-        } else {
-            Ok(self.db.get(content_id)?)
-        }
     }
 
     /// Public method for retrieving the node's current radius.
@@ -793,14 +778,7 @@ pub mod test {
         let storage_config = PortalStorageConfig::new(10, node_id);
         let mut storage = PortalStorage::new(storage_config)?;
         let master_accumulator_content_key = IdentityContentKey::new(LATEST_MASTER_ACC_CONTENT_ID);
-        let master_accumulator_value: Vec<u8> = "OGFWs179fWnqmjvHQFGHszXloc3Wzdb4".into();
-
-        storage.store(&master_accumulator_content_key, &master_accumulator_value)?;
-        let result = storage
-            .get(&master_accumulator_content_key)
-            .unwrap()
-            .unwrap();
-        assert_eq!(result, master_accumulator_value);
+        let master_accumulator_value: Vec<u8> = PortalStorage::default_trusted_master_acc();
 
         // fill up data storage until master accumulator is outside radius
         while storage.distance_to_content_id(&master_accumulator_content_key.content_id())

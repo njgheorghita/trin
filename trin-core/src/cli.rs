@@ -16,7 +16,7 @@ const DEFAULT_SUBNETWORKS: &str = "history";
 pub const DEFAULT_STORAGE_CAPACITY: &str = "100000"; // 100mb
 pub const DEFAULT_TRUSTED_PROVIDER: &str = "infura";
 pub const DEFAULT_MASTER_ACC_HASH: &str =
-    "0xe35cb3b1acac4c0ba71a2c76b51b81ff8689ff5c9d9b5d3ea1976ea4bf248b05";
+    "0x40d0ec5ce5b60d8f350a5c7651aac39d85a9e5ee52695a796f4c18496aa16a3d";
 
 #[derive(StructOpt, Debug, PartialEq, Clone)]
 #[structopt(
@@ -134,7 +134,7 @@ pub struct TrinConfig {
 
     #[structopt(
         long = "trusted-master-acc-hash",
-        help = "Hash to use for pre-merge master accumulator. defaults to...",
+        help = "Hash to load a custom pre-merge master accumulator for validation.",
         default_value = DEFAULT_MASTER_ACC_HASH,
     )]
     pub trusted_master_acc_hash: H256,

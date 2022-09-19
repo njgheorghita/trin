@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use anyhow::anyhow;
@@ -13,21 +14,23 @@ use crate::{
     jsonrpc::endpoints::HistoryEndpoint,
     jsonrpc::types::{HistoryJsonRpcRequest, Params},
     portalnet::{
-        storage::{PortalStorage, PortalStorageConfig},
+        storage::{ContentStore, PortalStorage, PortalStorageConfig},
         types::content_key::{
             HistoryContentKey, IdentityContentKey, MasterAccumulator as MasterAccumulatorKey,
             SszNone,
         },
     },
-    types::{accumulator::{validate_pre_merge_header, MasterAccumulator}, header::Header},
+    types::{
+        accumulator::{validate_pre_merge_header, MasterAccumulator},
+        header::Header,
+    },
     utils::{
         bytes::{hex_decode, hex_encode},
         provider::TrustedProvider,
     },
 };
 
-pub const MERGE_BLOCK_NUMBER: u64 = 28999u64;
-//pub const MERGE_BLOCK_NUMBER: u64 = 15_537_393u64;
+pub const MERGE_BLOCK_NUMBER: u64 = 15_537_394u64;
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
@@ -54,10 +57,13 @@ impl HeaderOracle {
         }
     }
 
+    /// Loads default master acc from disk, unless instructed to lookup a custom master acc
+    /// from the network.
     pub async fn bootstrap(&mut self, trusted_master_acc_hash: H256) {
         // Get latest master accumulator from AccumulatorDB
         let latest_master_acc_content_key =
             HistoryContentKey::MasterAccumulator(MasterAccumulatorKey::Latest(SszNone::new()));
+
         let latest_local_master_acc: &Option<Vec<u8>> = &self
             .portal_storage
             .as_ref()
@@ -118,33 +124,31 @@ impl HeaderOracle {
         let trusted_master_acc =
             MasterAccumulator::from_ssz_bytes(&trusted_master_acc_ssz).unwrap();
 
+        info!("Bootstrapping header oracle with custom master accumulator.");
         self.master_acc = trusted_master_acc;
         let _ = &self
             .portal_storage
             .as_ref()
             .write()
             .unwrap()
-            .store(&latest_master_acc_content_key, &trusted_master_acc_ssz)
+            .put(latest_master_acc_content_key, trusted_master_acc_ssz)
             .unwrap();
     }
 
     // Currently falls back to trusted provider, to be updated to use canonical block indices network.
-    pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<String> {
+    pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<H256> {
         let hex_number = format!("0x{:02X}", block_number);
         let method = "eth_getBlockByNumber".to_string();
         let params = Params::Array(vec![json!(hex_number), json!(false)]);
         let response: Value = self
             .trusted_provider
             .dispatch_http_request(method, params)?;
-        let hash = match response["result"]["hash"].as_str() {
-            Some(val) => val.trim_start_matches("0x"),
-            None => {
-                return Err(anyhow!(
-                    "Unable to validate content received from trusted provider."
-                ))
-            }
-        };
-        Ok(hash.to_owned())
+        match response["result"]["hash"].as_str() {
+            Some(val) => Ok(H256::from_str(val)?),
+            None => Err(anyhow!(
+                "Unable to validate content received from trusted provider."
+            )),
+        }
     }
 
     pub fn get_header_by_hash(&self, block_hash: H256) -> anyhow::Result<Header> {
@@ -166,21 +170,21 @@ impl HeaderOracle {
     }
 
     pub async fn validate_header_is_canonical(&self, header: Header) -> anyhow::Result<()> {
-        if header.number > MERGE_BLOCK_NUMBER {
-            if let Ok(val) =
-                validate_pre_merge_header(&header, &self.master_acc, self.history_jsonrpc_tx()?)
-                    .await
-            {
-                match val {
-                    true => return Ok(()),
-                    false => return Err(anyhow!("hash is invalid")),
+        if header.number <= MERGE_BLOCK_NUMBER {
+            if let Ok(history_jsonrpc_tx) = self.history_jsonrpc_tx() {
+                if let Ok(val) =
+                    validate_pre_merge_header(&header, &self.master_acc, history_jsonrpc_tx).await
+                {
+                    match val {
+                        true => return Ok(()),
+                        false => return Err(anyhow!("hash is invalid")),
+                    }
                 }
             }
         }
         // either header is post-merge or there was an error trying to validate it via chain
         // history network, so we fallback to infura
         let trusted_hash = self.get_hash_at_height(header.number).unwrap();
-        let trusted_hash = H256::from_slice(&hex_decode(&trusted_hash)?);
         match trusted_hash == header.hash() {
             true => Ok(()),
             false => Err(anyhow!(
@@ -224,23 +228,30 @@ impl Validator<IdentityContentKey> for MockValidator {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::str::FromStr;
 
     use discv5::enr::NodeId;
 
-    use crate::cli::TrinConfig;
+    use crate::cli::{TrinConfig, DEFAULT_MASTER_ACC_HASH};
     use crate::portalnet::storage::PortalStorageConfig;
 
-    #[test]
-    fn header_oracle_bootstraps_with_frozen_master_acc() {
+    #[tokio::test]
+    async fn header_oracle_bootstraps_with_default_merge_master_acc() {
         let node_id = NodeId::random();
         let trin_config = TrinConfig::default();
         let trusted_provider = TrustedProvider::from_trin_config(&trin_config);
         let storage_config = PortalStorageConfig::new(100, node_id);
-        let header_oracle = HeaderOracle::new(trusted_provider, storage_config);
-        // test hashes !!!!!!!
+        let mut header_oracle = HeaderOracle::new(trusted_provider, storage_config);
+        header_oracle
+            .bootstrap(trin_config.trusted_master_acc_hash)
+            .await;
         assert_eq!(
             header_oracle.master_acc.height().unwrap(),
             MERGE_BLOCK_NUMBER
+        );
+        assert_eq!(
+            header_oracle.master_acc.tree_hash_root(),
+            H256::from_str(DEFAULT_MASTER_ACC_HASH).unwrap(),
         );
     }
 }
