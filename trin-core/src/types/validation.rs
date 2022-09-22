@@ -16,12 +16,12 @@ use crate::{
     portalnet::{
         storage::{ContentStore, PortalStorage, PortalStorageConfig},
         types::content_key::{
-            HistoryContentKey, IdentityContentKey, MasterAccumulator as MasterAccumulatorKey,
+            EpochAccumulator as EpochAccumulatorKey, HistoryContentKey, IdentityContentKey, MasterAccumulator as MasterAccumulatorKey,
             SszNone,
         },
     },
     types::{
-        accumulator::{validate_pre_merge_header, MasterAccumulator},
+        accumulator::{validate_pre_merge_header, EpochAccumulator, MasterAccumulator},
         header::Header,
     },
     utils::{
@@ -167,6 +167,13 @@ impl HeaderOracle {
             Some(val) => Ok(val),
             None => Err(anyhow!("History subnetwork is not available")),
         }
+    }
+
+    pub fn validate_epoch_hash_is_canonical(&self, epoch_hash: H256) -> anyhow::Result<()> {
+        if self.master_acc.is_epoch_hash_canonical(&epoch_hash) {
+            return Ok(());
+        }
+        Err(anyhow!("fukc"))
     }
 
     pub async fn validate_header_is_canonical(&self, header: Header) -> anyhow::Result<()> {

@@ -371,9 +371,11 @@ mod tests {
     }
 
     #[test_log::test]
-    fn block_body_ssz_encoding_decoding_round_trip() {
+    fn sexy_block_body_ssz_encoding_decoding_round_trip() {
+        use crate::utils::bytes::hex_encode;
         let block_body = get_14764013_block_body();
         let encoded = block_body.as_ssz_bytes();
+        println!("my block body: {:?}", hex_encode(&encoded));
 
         let expected: Vec<u8> =
             std::fs::read("./src/types/assets/block_body_14764013.bin").unwrap();

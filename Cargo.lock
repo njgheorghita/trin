@@ -4690,6 +4690,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tree_hash",
  "trin-core",
  "ureq",
 ]

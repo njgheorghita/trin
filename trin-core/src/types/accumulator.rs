@@ -82,6 +82,15 @@ impl MasterAccumulator {
         header.number / EPOCH_SIZE as u64
     }
 
+    pub fn is_epoch_hash_canonical(&self, epoch_hash: &H256) -> bool {
+        for trusted_hash in self.historical_epochs.epochs.into_iter() {
+            if epoch_hash == trusted_hash {
+                return true
+            }
+        }
+        return false
+    }
+
     fn exists_in_current_epoch(&self, header: &Header) -> bool {
         let current_epoch_block_min = match self.historical_header_count() {
             0 => match header.number {

@@ -94,7 +94,7 @@ impl TrustedProvider {
     }
 }
 
-fn get_infura_project_id_from_env() -> String {
+pub fn get_infura_project_id_from_env() -> String {
     match env::var("TRIN_INFURA_PROJECT_ID") {
         Ok(val) => val,
         Err(_) => panic!(

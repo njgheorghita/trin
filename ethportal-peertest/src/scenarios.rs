@@ -85,7 +85,6 @@ pub fn test_offer_accept(peertest_config: PeertestConfig, peertest: &Peertest) {
     );
 }
 
-// unwraps
 pub async fn test_bootstrap_master_accumulator(
     _peertest_config: PeertestConfig,
     peertest: &Peertest,
