@@ -11,7 +11,7 @@ use trin_core::{
     jsonrpc::{
         endpoints::HistoryEndpoint,
         types::{
-            FindContentParams, FindNodesParams, HistoryJsonRpcRequest, LocalContentParams,
+            GetBlockByNumberParams, FindContentParams, FindNodesParams, HistoryJsonRpcRequest, LocalContentParams,
             OfferParams, PingParams, RecursiveFindContentParams, SendOfferParams, StoreParams,
         },
         utils::bucket_entries_to_json,
@@ -218,6 +218,12 @@ impl HistoryRequestHandler {
                         bucket_entries_to_json(self.network.overlay.bucket_entries());
 
                     let _ = request.resp.send(Ok(bucket_entries_json));
+                }
+                HistoryEndpoint::GetBlockByNumber => {
+                    let params = GetBlockByNumberParams::try_from(request.params).unwrap();
+                    let block = self.network.validator.get_block_at_height(params.block_number);
+                    let _ = request.resp.send(Ok(block));
+
                 }
                 HistoryEndpoint::SampleLatestMasterAccumulator => {
                     // Requests the "latest" master accumulator from 10 random peers

@@ -1,24 +1,29 @@
+use std::sync::Arc;
+
 use anyhow::anyhow;
-use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use serde_json::{json, Number, Value};
+use tokio::sync::{mpsc, RwLock};
 
 use crate::{
     jsonrpc::{
         endpoints::HistoryEndpoint,
         handlers::proxy_query_to_history_subnet,
-        types::{GetBlockByHashParams, HistoryJsonRpcRequest, Params},
+        types::{GetBlockByHashParams, GetBlockByNumberParams, HistoryJsonRpcRequest, Params},
     },
     portalnet::types::content_key::{BlockHeader, HistoryContentKey},
     types::header::Header,
+    types::validation::{MERGE_BLOCK_NUMBER, HeaderOracle},
     utils::bytes::{hex_decode, hex_encode},
 };
 
 /// eth_getBlockByHash
 pub async fn get_block_by_hash(
     params: Params,
+    // change to header_oracle?
+    // move this functionality to header oracle?
     history_jsonrpc_tx: &Option<mpsc::UnboundedSender<HistoryJsonRpcRequest>>,
 ) -> anyhow::Result<Value> {
-    let params: GetBlockByHashParams = params.clone().try_into()?;
+    let params: GetBlockByHashParams = params.try_into()?;
     let content_key = HistoryContentKey::BlockHeader(BlockHeader {
         chain_id: 1,
         block_hash: params.block_hash,
@@ -43,4 +48,22 @@ pub async fn get_block_by_hash(
         Ok(_) => Err(anyhow!("Invalid JSON value")),
         Err(err) => Err(err),
     }
+}
+
+/// eth_getBlockByNumber
+pub async fn get_block_by_number(
+    params: Params,
+    header_oracle: Arc<RwLock<HeaderOracle>>
+) -> anyhow::Result<Value> {
+    let params: GetBlockByNumberParams = params.try_into()?;
+    //let overlay_params = Params::Array(vec![Value::Number(Number::from(params.block_number))]);
+    // if block_number > MERGE_BLOCK_NUMBER {
+    // panic.
+    // }
+    let block_hash = header_oracle.read().get_hash_at_height(params.block_number)?;
+    let params = GetBlockByHashParams {
+        block_hash: block_hash.into(),
+        full_transactions: params.full_transactions,
+    };
+    get_block_by_hash(params, header_oracle.history_jsonrpc_tx.clone()).await
 }

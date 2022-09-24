@@ -8,6 +8,7 @@ use tree_hash::{MerkleHasher, TreeHash};
 use tree_hash_derive::TreeHash;
 
 use crate::types::header::Header;
+use crate::types::validation::MERGE_BLOCK_NUMBER;
 
 /// Number of blocks / epoch
 pub const EPOCH_SIZE: usize = 8192;
@@ -52,6 +53,17 @@ impl MasterAccumulator {
     fn epoch_number(&self) -> u64 {
         u64::try_from(self.historical_epochs.epochs.len())
             .expect("Historical Epoch count should not overflow u64")
+    }
+
+    pub fn get_epoch_hash_for_block(&self, block_number: u64) -> anyhow::Result<Option<H256>> {
+        if block_number > MERGE_BLOCK_NUMBER {
+            return Err(anyhow!("fuck"))
+        }
+        if block_number > self.epoch_number() * EPOCH_SIZE as u64 {
+            return Ok(None)
+        }
+        let epoch_index = block_number / EPOCH_SIZE;
+        Ok(Some(self.historical_epochs.epochs[epoch_index]))
     }
 
     /// Compare that one master accumulator contains the same validation data as another,

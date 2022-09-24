@@ -20,8 +20,10 @@ use crate::{
         },
     },
     types::{accumulator::MasterAccumulator, header::Header},
-    utils::provider::TrustedProvider,
+    utils::{bytes::hex_decode, provider::TrustedProvider},
 };
+
+pub const MERGE_BLOCK_NUMBER: u64 = 15_537_394u64;
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation. Currently, it just proxies these requests
@@ -104,7 +106,7 @@ impl HeaderOracle {
     }
 
     // Currently falls back to trusted provider, to be updated to use canonical block indices network.
-    pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<String> {
+    pub fn get_hash_at_height(&self, block_number: u64) -> anyhow::Result<H256> {
         let hex_number = format!("0x{:02X}", block_number);
         let method = "eth_getBlockByNumber".to_string();
         let params = Params::Array(vec![json!(hex_number), json!(false)]);
@@ -112,14 +114,14 @@ impl HeaderOracle {
             .trusted_provider
             .dispatch_http_request(method, params)?;
         let hash = match response["result"]["hash"].as_str() {
-            Some(val) => val.trim_start_matches("0x"),
+            Some(val) => hex_decode(val),
             None => {
                 return Err(anyhow!(
                     "Unable to validate content received from trusted provider."
                 ))
             }
         };
-        Ok(hash.to_owned())
+        Ok(H256::from_str(hash))
     }
 
     pub fn get_header_by_hash(&self, block_hash: H256) -> anyhow::Result<Header> {
