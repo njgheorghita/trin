@@ -74,6 +74,68 @@ pub fn test_offer_accept(peertest_config: PeertestConfig, peertest: &Peertest) {
     );
 }
 
+pub fn test_trace_recursive_find_content(_peertest_config: PeertestConfig, peertest: &Peertest) {
+    // Store content to offer in the testnode db
+    let store_request = JsonRpcRequest {
+        method: "portal_historyStore".to_string(),
+        id: 11,
+        params: Params::Array(vec![
+            Value::String(HISTORY_CONTENT_KEY.to_string()),
+            Value::String(HISTORY_CONTENT_VALUE.to_string()),
+        ]),
+    };
+
+    let store_result = make_ipc_request(&peertest.bootnode.web3_ipc_path, &store_request).unwrap();
+    assert_eq!(store_result.as_str().unwrap(), "true");
+
+    // Send trace recursive find content request
+    let request = JsonRpcRequest {
+        method: "portal_historyTraceRecursiveFindContent".to_string(),
+        id: 12,
+        params: Params::Array(vec![json!(
+            "0x0055b11b918355b1ef9c5db810302ebad0bf2544255b530cdce90674d5887bb286"
+        )]),
+    };
+
+    let result = make_ipc_request(&peertest.nodes[0].web3_ipc_path, &request).unwrap();
+    assert_eq!(result["content"], json!(HISTORY_CONTENT_VALUE.to_string()));
+    assert_eq!(
+        result["route"],
+        json!([{"enr": &peertest.bootnode.enr.to_base64(), "distance": 256}])
+    );
+}
+
+pub fn test_trace_recursive_find_content_local_db(
+    _peertest_config: PeertestConfig,
+    peertest: &Peertest,
+) {
+    // Store content to offer in the testnode db
+    let store_request = JsonRpcRequest {
+        method: "portal_historyStore".to_string(),
+        id: 13,
+        params: Params::Array(vec![
+            Value::String(HISTORY_CONTENT_KEY.to_string()),
+            Value::String(HISTORY_CONTENT_VALUE.to_string()),
+        ]),
+    };
+
+    let store_result = make_ipc_request(&peertest.bootnode.web3_ipc_path, &store_request).unwrap();
+    assert_eq!(store_result.as_str().unwrap(), "true");
+
+    // Send trace recursive find content request
+    let request = JsonRpcRequest {
+        method: "portal_historyTraceRecursiveFindContent".to_string(),
+        id: 14,
+        params: Params::Array(vec![json!(
+            "0x0055b11b918355b1ef9c5db810302ebad0bf2544255b530cdce90674d5887bb286"
+        )]),
+    };
+
+    let result = make_ipc_request(&peertest.bootnode.web3_ipc_path, &request).unwrap();
+    assert_eq!(result["content"], json!(HISTORY_CONTENT_VALUE.to_string()));
+    assert_eq!(result["route"], json!("local"));
+}
+
 pub fn test_eth_get_block_by_hash(_peertest_config: PeertestConfig, peertest: &Peertest) {
     // Store content to offer in the testnode db
     let store_request = JsonRpcRequest {

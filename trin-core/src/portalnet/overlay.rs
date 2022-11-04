@@ -25,6 +25,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     portalnet::{
         discovery::Discovery,
+        find::query_info::FindContentResult,
         overlay_service::{
             OverlayCommand, OverlayRequest, OverlayRequestError, OverlayService, RequestDirection,
         },
@@ -662,13 +663,14 @@ where
     }
 
     /// Performs a content lookup for `target`.
-    pub async fn lookup_content(&self, target: TContentKey) -> Option<Vec<u8>> {
+    pub async fn lookup_content(&self, target: TContentKey, trace: bool) -> FindContentResult {
         let (tx, rx) = oneshot::channel();
         let content_id = target.content_id();
 
         if let Err(err) = self.command_tx.send(OverlayCommand::FindContentQuery {
             target,
             callback: tx,
+            trace,
         }) {
             warn!(
                 protocol = %self.protocol,
@@ -676,7 +678,7 @@ where
                 content.id = %hex_encode(content_id),
                 "Error submitting FindContent query to service"
             );
-            return None;
+            return FindContentResult::default();
         }
 
         match rx.await {
@@ -688,7 +690,7 @@ where
                     content.id = %hex_encode(content_id),
                     "Error receiving content from service",
                 );
-                None
+                FindContentResult::default()
             }
         }
     }

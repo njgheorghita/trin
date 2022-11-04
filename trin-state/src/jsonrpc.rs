@@ -102,12 +102,13 @@ impl StateRequestHandler {
                                     };
                                 match local_content {
                                     None => {
-                                        match self.network.overlay.lookup_content(content_key).await
-                                        {
-                                            Some(content) => {
-                                                let value = Value::String(hex_encode(content));
-                                                Ok(value)
-                                            }
+                                        let response = self
+                                            .network
+                                            .overlay
+                                            .lookup_content(content_key, false)
+                                            .await;
+                                        match response.content {
+                                            Some(val) => Ok(Value::String(hex_encode(val))),
                                             None => Ok(Value::Null),
                                         }
                                     }

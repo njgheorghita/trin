@@ -37,7 +37,7 @@ use crate::{
                 findnodes::FindNodeQuery,
                 query::{Query, QueryConfig},
             },
-            query_info::{QueryInfo, QueryType},
+            query_info::{FindContentResult, QueryInfo, QueryType, TraceEnr},
             query_pool::{QueryId, QueryPool, QueryPoolState, TargetKey},
         },
         metrics::OverlayMetrics,
@@ -90,7 +90,9 @@ pub enum OverlayCommand<TContentKey> {
         /// The query target.
         target: TContentKey,
         /// A callback channel to transmit the result of the query.
-        callback: oneshot::Sender<Option<Vec<u8>>>,
+        callback: oneshot::Sender<FindContentResult>,
+        /// Flag to indicate whether request collects an ENR trace.
+        trace: bool,
     },
 }
 
@@ -447,8 +449,8 @@ where
                 Some(command) = self.command_rx.recv() => {
                     match command {
                         OverlayCommand::Request(request) => self.process_request(request),
-                        OverlayCommand::FindContentQuery { target, callback } => {
-                            if let Some(query_id) = self.init_find_content_query(target.clone(), Some(callback)) {
+                        OverlayCommand::FindContentQuery { target, callback, trace} => {
+                            if let Some(query_id) = self.init_find_content_query(target.clone(), Some(callback), trace) {
                                 trace!(
                                     query.id = %query_id,
                                     content.id = %hex_encode_compact(target.content_id()),
@@ -757,10 +759,15 @@ where
                 if let QueryType::FindContent {
                     callback: Some(callback),
                     target: content_key,
+                    route: trace_enrs,
                 } = query_info.query_type
                 {
                     // Send (possibly `None`) content on callback channel.
-                    if let Err(err) = callback.send(content.clone()) {
+                    let response = FindContentResult {
+                        content: content.clone(),
+                        route: trace_enrs,
+                    };
+                    if let Err(err) = callback.send(response) {
                         error!(
                             query.id = %query_id,
                             error = ?err,
@@ -1658,6 +1665,8 @@ where
     ) {
         let local_node_id = self.local_enr().node_id();
         if let Some((query_info, query)) = self.find_content_query_pool.get_mut(*query_id) {
+            // Update the request's trace enrs. Will only update if tracing is activated.
+            query_info.update_route(&source);
             // If an ENR is not present in the query's untrusted ENRs, then add the ENR.
             // Ignore the local node's ENR.
             for enr_ref in enrs.iter().filter(|enr| enr.node_id() != local_node_id) {
@@ -1690,7 +1699,9 @@ where
         source: Enr,
         content: Vec<u8>,
     ) {
-        if let Some((_, query)) = self.find_content_query_pool.get_mut(*query_id) {
+        if let Some((query_info, query)) = self.find_content_query_pool.get_mut(*query_id) {
+            // Update the request's trace enrs. Will only update if tracing is activated.
+            query_info.update_route(&source);
             // Mark the query successful for the source of the response with the content.
             query.on_success(
                 &source.node_id(),
@@ -1951,7 +1962,8 @@ where
     fn init_find_content_query(
         &mut self,
         target: TContentKey,
-        callback: Option<oneshot::Sender<Option<Vec<u8>>>>,
+        callback: Option<oneshot::Sender<FindContentResult>>,
+        trace: bool,
     ) -> Option<QueryId> {
         // Represent the target content ID with a node ID.
         let target_node_id = NodeId::new(&target.content_id());
@@ -1973,8 +1985,17 @@ where
             .take(query_config.num_results)
             .collect();
 
+        // Initialize an empy trace enr vector if tracing has been activated
+        let route: Option<Vec<TraceEnr>> = match trace {
+            true => Some(vec![]),
+            false => None,
+        };
         let query_info = QueryInfo {
-            query_type: QueryType::FindContent { target, callback },
+            query_type: QueryType::FindContent {
+                target,
+                callback,
+                route,
+            },
             untrusted_enrs: SmallVec::from_vec(closest_enrs),
         };
 
@@ -3066,7 +3087,7 @@ mod tests {
         let target_content = NodeId::random();
         let target_content_key = IdentityContentKey::new(target_content.raw());
 
-        let query_id = service.init_find_content_query(target_content_key.clone(), None);
+        let query_id = service.init_find_content_query(target_content_key.clone(), None, false);
         let query_id = query_id.expect("Query ID for new find content query is `None`");
 
         let (query_info, query) = service
@@ -3079,7 +3100,8 @@ mod tests {
             &query_info.query_type,
             QueryType::FindContent {
                 target: _target_content_key,
-                callback: None
+                callback: None,
+                route: None
             }
         ));
 
@@ -3120,7 +3142,7 @@ mod tests {
         let target_content = NodeId::random();
         let target_content_key = IdentityContentKey::new(target_content.raw());
 
-        let query_id = service.init_find_content_query(target_content_key.clone(), None);
+        let query_id = service.init_find_content_query(target_content_key.clone(), None, false);
         let query_id = query_id.expect("Query ID for new find content query is `None`");
 
         let (_, query) = service
@@ -3185,7 +3207,7 @@ mod tests {
         let target_content = NodeId::random();
         let target_content_key = IdentityContentKey::new(target_content.raw());
 
-        let query_id = service.init_find_content_query(target_content_key.clone(), None);
+        let query_id = service.init_find_content_query(target_content_key.clone(), None, false);
         let query_id = query_id.expect("Query ID for new find content query is `None`");
 
         let (_, query) = service
@@ -3252,7 +3274,7 @@ mod tests {
 
         let (callback_tx, callback_rx) = oneshot::channel();
         let query_id =
-            service.init_find_content_query(target_content_key.clone(), Some(callback_tx));
+            service.init_find_content_query(target_content_key.clone(), Some(callback_tx), false);
         let query_id = query_id.expect("Query ID for new find content query is `None`");
 
         let query_event =
@@ -3305,14 +3327,9 @@ mod tests {
 
         service.handle_find_content_query_event(query_event);
 
-        match callback_rx
+        let response = callback_rx
             .await
-            .expect("Expected result on callback channel receiver")
-        {
-            Some(result_content) => {
-                assert_eq!(result_content, content);
-            }
-            _ => panic!("Unexpected find content query result type"),
-        }
+            .expect("Expected result on callback channel receiver");
+        assert_eq!(response.content.unwrap(), content);
     }
 }

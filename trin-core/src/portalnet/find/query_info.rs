@@ -1,3 +1,8 @@
+use discv5::{enr::NodeId, kbucket::Key, Enr};
+use futures::channel::oneshot;
+use serde::Serialize;
+use smallvec::SmallVec;
+
 use crate::portalnet::{
     find::query_pool::TargetKey,
     types::{
@@ -5,9 +10,6 @@ use crate::portalnet::{
         messages::{FindContent, FindNodes, Request},
     },
 };
-use discv5::{enr::NodeId, kbucket::Key, Enr};
-use futures::channel::oneshot;
-use smallvec::SmallVec;
 
 /// Information about a query.
 #[derive(Debug)]
@@ -39,8 +41,36 @@ pub enum QueryType<TContentKey> {
         target: TContentKey,
 
         /// A callback channel for the result of the query.
-        callback: Option<oneshot::Sender<Option<Vec<u8>>>>,
+        callback: Option<oneshot::Sender<FindContentResult>>,
+
+        /// Optional vector to store trace enrs.
+        route: Option<Vec<TraceEnr>>,
     },
+}
+
+/// Struct to store content result for a FindContent lookup, along with optional route trace.
+#[derive(Debug, Default, Serialize)]
+pub struct FindContentResult {
+    pub content: Option<Vec<u8>>,
+    pub route: Option<Vec<TraceEnr>>,
+}
+
+/// ENR with its distance from target content. Used for tracing tracing recursive find content
+/// requests
+#[derive(Clone, Debug, Serialize)]
+pub struct TraceEnr {
+    pub enr: Enr,
+    pub distance: u64,
+}
+
+impl TraceEnr {
+    pub fn from_target(target: Key<NodeId>, source: &Enr) -> Self {
+        let distance = target.log2_distance(&Key::from(source.node_id())).unwrap();
+        Self {
+            enr: source.clone(),
+            distance,
+        }
+    }
 }
 
 impl<TContentKey: OverlayContentKey> QueryInfo<TContentKey> {
@@ -63,6 +93,25 @@ impl<TContentKey: OverlayContentKey> QueryInfo<TContentKey> {
         };
 
         Ok(request)
+    }
+
+    /// Update the route trace for a FindContent query, if the lookup contains a trace store.
+    pub fn update_route(&mut self, source: &Enr) {
+        let key = self.key().clone();
+        match self.query_type {
+            QueryType::FindContent {
+                target: _,
+                callback: _,
+                ref mut route,
+            } => match route {
+                Some(ref mut val) => {
+                    let trace_enr = TraceEnr::from_target(key, source);
+                    val.push(trace_enr);
+                }
+                None => (),
+            },
+            QueryType::FindNode { .. } => (),
+        };
     }
 }
 

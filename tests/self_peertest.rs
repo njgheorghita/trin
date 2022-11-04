@@ -51,6 +51,11 @@ mod test {
         peertest::jsonrpc::test_jsonrpc_endpoints_over_ipc(peertest_config.clone(), &peertest)
             .await;
         peertest::scenarios::test_offer_accept(peertest_config.clone(), &peertest);
+        peertest::scenarios::test_trace_recursive_find_content(peertest_config.clone(), &peertest);
+        peertest::scenarios::test_trace_recursive_find_content_local_db(
+            peertest_config.clone(),
+            &peertest,
+        );
         peertest::scenarios::test_eth_get_block_by_hash(peertest_config.clone(), &peertest);
         peertest::scenarios::test_eth_get_block_by_number(peertest_config.clone(), &peertest);
 

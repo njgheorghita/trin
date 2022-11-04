@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::error;
 
@@ -73,6 +73,61 @@ impl HistoryRequestHandler {
                     };
                     let _ = request.resp.send(response);
                 }
+                HistoryEndpoint::TraceRecursiveFindContent => {
+                    let find_content_params =
+                        match RecursiveFindContentParams::try_from(request.params) {
+                            Ok(params) => params,
+                            Err(msg) => {
+                                let _ = request.resp.send(Err(format!(
+                                    "Invalid TraceRecursiveFindContent params: {:?}",
+                                    msg.code
+                                )));
+                                return;
+                            }
+                        };
+
+                    let response =
+                        match HistoryContentKey::try_from(find_content_params.content_key.to_vec())
+                        {
+                            Ok(content_key) => {
+                                // Check whether we have the data locally.
+                                let local_content: Option<Vec<u8>> =
+                                    match self.network.overlay.store.read().get(&content_key) {
+                                        Ok(Some(data)) => Some(data),
+                                        Ok(None) => None,
+                                        Err(err) => {
+                                            error!(
+                                                error = %err,
+                                                content.key = %content_key,
+                                                "Error checking data store for content",
+                                            );
+                                            None
+                                        }
+                                    };
+                                match local_content {
+                                    None => {
+                                        let response = self
+                                            .network
+                                            .overlay
+                                            .lookup_content(content_key, true)
+                                            .await;
+                                        error!("response: {:?}", response);
+                                        Ok(json!({
+                                            "content": hex_encode(response.content.unwrap()),
+                                            "route": response.route.unwrap(),
+                                        }))
+                                    }
+                                    Some(content) => Ok(json!({
+                                        "content": hex_encode(content),
+                                        "route": "local",
+                                    })),
+                                }
+                            }
+                            Err(err) => Err(format!("Invalid content key requested: {}", err)),
+                        };
+
+                    let _ = request.resp.send(response);
+                }
                 HistoryEndpoint::RecursiveFindContent => {
                     let find_content_params =
                         match RecursiveFindContentParams::try_from(request.params) {
@@ -106,12 +161,13 @@ impl HistoryRequestHandler {
                                     };
                                 match local_content {
                                     None => {
-                                        match self.network.overlay.lookup_content(content_key).await
-                                        {
-                                            Some(content) => {
-                                                let value = Value::String(hex_encode(content));
-                                                Ok(value)
-                                            }
+                                        let response = self
+                                            .network
+                                            .overlay
+                                            .lookup_content(content_key, false)
+                                            .await;
+                                        match response.content {
+                                            Some(val) => Ok(Value::String(hex_encode(val))),
                                             None => Ok(Value::Null),
                                         }
                                     }
