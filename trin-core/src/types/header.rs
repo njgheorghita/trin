@@ -48,6 +48,12 @@ pub struct Header {
     pub base_fee_per_gas: Option<U256>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HeaderWithProof {
+    pub header: Header,
+    pub proof: Proof,
+}
+
 fn raw_bytes<S>(value: &Option<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -226,6 +232,42 @@ impl Decodable for Header {
         }
 
         Ok(header)
+    }
+}
+
+impl Decodable for HeaderWithProof {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        let header: Header = rlp.val_at(0)?;
+        let proof: Proof = rlp.val_at(1)?;
+        Ok(Self { header, proof })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Proof {
+    pub proof: [H256; 15],
+}
+
+impl Decodable for Proof {
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        let proof: [H256; 15] = [
+            rlp.val_at(0)?,
+            rlp.val_at(1)?,
+            rlp.val_at(2)?,
+            rlp.val_at(3)?,
+            rlp.val_at(4)?,
+            rlp.val_at(5)?,
+            rlp.val_at(6)?,
+            rlp.val_at(7)?,
+            rlp.val_at(8)?,
+            rlp.val_at(9)?,
+            rlp.val_at(10)?,
+            rlp.val_at(11)?,
+            rlp.val_at(12)?,
+            rlp.val_at(13)?,
+            rlp.val_at(14)?,
+        ];
+        Ok(Self { proof })
     }
 }
 

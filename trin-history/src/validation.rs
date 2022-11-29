@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use ethereum_types::H256;
 use ssz::Decode;
 use tokio::sync::RwLock;
+use tracing::error;
 use tree_hash::TreeHash;
 
 use trin_core::{
@@ -12,7 +13,7 @@ use trin_core::{
     types::{
         accumulator::EpochAccumulator,
         block_body::BlockBody,
-        header::Header,
+        header::{Header, HeaderWithProof},
         receipts::Receipts,
         validation::{HeaderOracle, Validator},
     },
@@ -32,6 +33,7 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
     where
         HistoryContentKey: 'async_trait,
     {
+        error!("XXXXXXXXX msg received");
         match content_key {
             HistoryContentKey::BlockHeader(_key) => {
                 let header: Header = rlp::decode(content)?;
@@ -39,6 +41,18 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
                     .write()
                     .await
                     .validate_header_is_canonical(header)
+                    .await
+            }
+            HistoryContentKey::BlockHeaderWithProof(key) => {
+                error!("GOT IT XXXXXXXXX");
+                error!("key: {:?}", key);
+                let header_with_proof: HeaderWithProof = rlp::decode(content)?;
+                error!("header: {:?}", header_with_proof.header);
+                error!("proof: {:?}", header_with_proof.proof);
+                self.header_oracle
+                    .write()
+                    .await
+                    .validate_header_is_canonical(header_with_proof.header)
                     .await
             }
             HistoryContentKey::BlockBody(key) => {

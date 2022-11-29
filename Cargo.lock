@@ -2475,6 +2475,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
+name = "micromath"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39617bc909d64b068dcffd0e3e31679195b5576d0c83fadc52690268cc2b2b55"
+
+[[package]]
 name = "mime"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3505,6 +3511,16 @@ checksum = "620f4129485ff1a7128d184bc687470c21c7951b64779ebc9cfdad3dcd920290"
 dependencies = [
  "libc",
  "librocksdb-sys",
+]
+
+[[package]]
+name = "rs_merkle"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a632a43487c1332be8e183588079f89b6820fab24e04db49521eacd536837372"
+dependencies = [
+ "micromath",
+ "sha2 0.10.3",
 ]
 
 [[package]]
@@ -4624,6 +4640,7 @@ dependencies = [
  "discv5",
  "enr",
  "env_logger 0.9.0",
+ "eth2_hashing",
  "eth2_ssz",
  "eth2_ssz_derive",
  "eth2_ssz_types",
@@ -4650,6 +4667,7 @@ dependencies = [
  "rlp 0.5.1",
  "rlp-derive",
  "rocksdb",
+ "rs_merkle",
  "rstest",
  "rusqlite",
  "serde",

@@ -1,14 +1,16 @@
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
 use ethereum_types::{H256, U256};
+//use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use ssz::{Decode, Encode};
+use ssz::Decode;
 use ssz_derive::{Decode, Encode};
 use ssz_types::{typenum, VariableList};
 use tokio::sync::mpsc;
-use tree_hash::{MerkleHasher, TreeHash};
+use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 use crate::jsonrpc::endpoints::HistoryEndpoint;
@@ -16,6 +18,7 @@ use crate::jsonrpc::types::{HistoryJsonRpcRequest, Params};
 use crate::portalnet::types::content_key::{
     EpochAccumulator as EpochAccumulatorKey, HistoryContentKey,
 };
+use crate::types::merkle_proof::{verify_merkle_proof, MerkleTree};
 use crate::types::{header::Header, validation::MERGE_BLOCK_NUMBER};
 use crate::utils::bytes::{hex_decode, hex_encode};
 
@@ -27,7 +30,7 @@ pub const EPOCH_SIZE: usize = 8192;
 
 /// SSZ List[Hash256, max_length = MAX_HISTORICAL_EPOCHS]
 /// List of historical epoch accumulator merkle roots preceding current epoch.
-type HistoricalEpochsList = VariableList<tree_hash::Hash256, typenum::U131072>;
+pub type HistoricalEpochsList = VariableList<tree_hash::Hash256, typenum::U131072>;
 
 /// SSZ List[HeaderRecord, max_length = EPOCH_SIZE]
 /// List of (block_number, block_hash) for each header in the current epoch.
@@ -109,7 +112,7 @@ impl MasterAccumulator {
         let epoch_acc = self
             .lookup_epoch_acc(epoch_hash, history_jsonrpc_tx)
             .await?;
-        Ok(epoch_acc.header_records[rel_index as usize].block_hash)
+        Ok(epoch_acc[rel_index as usize])
     }
 
     fn is_header_in_current_epoch(&self, header: &Header) -> bool {
@@ -149,16 +152,78 @@ impl MasterAccumulator {
                 .lookup_epoch_acc(epoch_hash, history_jsonrpc_tx)
                 .await?;
             let header_index = (header.number as u64) - epoch_index * (EPOCH_SIZE as u64);
-            let header_record = epoch_acc.header_records[header_index as usize];
-            Ok(header_record.block_hash == header.hash())
+            let header_record = epoch_acc[header_index as usize];
+            Ok(header_record == header.hash())
         }
+    }
+
+    pub fn generate_proof(&self, header: &Header) -> anyhow::Result<Vec<H256>> {
+        // assert header is pre merge
+        println!("GENERATING PROOF");
+        println!("----------------");
+
+        // lookup epoch accumulator...
+        let epoch_acc_path = format!("./src/assets/0xf216…4c70.bin");
+        let raw_epoch_acc = fs::read(epoch_acc_path).unwrap();
+        let epoch_acc = EpochAccumulator::from_ssz_bytes(&raw_epoch_acc).unwrap();
+
+        let epoch_index = self.get_epoch_index_of_header(header);
+        let epoch_hash = self.historical_epochs[epoch_index as usize];
+        assert_eq!(epoch_acc.tree_hash_root(), epoch_hash);
+
+        let hr_index = (header.number % EPOCH_SIZE as u64) as usize;
+        let header_record = epoch_acc.header_records[hr_index];
+
+        println!(
+            "header record tree root hash: {:?}",
+            header_record.tree_hash_root()
+        );
+
+        // Generating the proof
+        let mut leaves = vec![];
+        for record in epoch_acc.header_records.into_iter() {
+            // block_hash == block_hash.tree_hash_root()
+            leaves.push(record.tree_hash_root());
+        }
+        let merkle_tree = MerkleTree::create(&leaves, 13);
+        let (_leaf, mut proof) = merkle_tree.generate_proof(hr_index, 13).unwrap();
+        // im not convinced at all...
+        // but here we insert the diff, and hr thr...
+        proof.insert(0, header_record.tree_hash_root());
+        proof.insert(0, header_record.total_difficulty.tree_hash_root());
+        Ok(proof)
+    }
+
+    pub fn verify_header_with_proof(
+        &self,
+        header: &Header,
+        proof: Vec<H256>,
+    ) -> anyhow::Result<bool> {
+        // assert header is pre merge
+        println!("VERIFYING PROOF");
+        println!("----------------");
+        // assert proof len is 15?
+        let header_hash = header.hash();
+        let hr_index = header.number % EPOCH_SIZE as u64;
+
+        let epoch_index = self.get_epoch_index_of_header(header);
+        let epoch_hash = self.historical_epochs[epoch_index as usize];
+
+        assert!(verify_merkle_proof(
+            header_hash,
+            &proof,
+            14,
+            hr_index as usize,
+            epoch_hash // root
+        ));
+        Ok(true)
     }
 
     pub async fn lookup_epoch_acc(
         &self,
         epoch_hash: H256,
         history_jsonrpc_tx: mpsc::UnboundedSender<HistoryJsonRpcRequest>,
-    ) -> anyhow::Result<EpochAccumulator> {
+    ) -> anyhow::Result<HistoricalEpochsList> {
         let content_key: Vec<u8> =
             HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash }).into();
         let content_key = hex_encode(content_key);
@@ -182,7 +247,7 @@ impl MasterAccumulator {
             .as_str()
             .ok_or_else(|| anyhow!("Invalid epoch acc received from chain history network"))?;
         let epoch_acc_ssz = hex_decode(epoch_acc_ssz)?;
-        EpochAccumulator::from_ssz_bytes(&epoch_acc_ssz).map_err(|msg| {
+        HistoricalEpochsList::from_ssz_bytes(&epoch_acc_ssz).map_err(|msg| {
             anyhow!(
                 "Invalid epoch acc received from chain history network: {:?}",
                 msg
@@ -202,46 +267,11 @@ impl Default for MasterAccumulator {
 
 /// Data type responsible for maintaining a store
 /// of all header records within an epoch.
-#[derive(Clone, Debug, Eq, PartialEq, Decode, Encode, Deserialize, Serialize)]
+// remove treehash trait
+// remove whole type?
+#[derive(Clone, Debug, Eq, PartialEq, Decode, Encode, Deserialize, Serialize, TreeHash)]
 pub struct EpochAccumulator {
     pub header_records: HeaderRecordList,
-}
-
-impl TreeHash for EpochAccumulator {
-    fn tree_hash_type() -> tree_hash::TreeHashType {
-        tree_hash::TreeHashType::List
-    }
-
-    fn tree_hash_packed_encoding(&self) -> Vec<u8> {
-        // in ssz merkleization spec, only basic types are packed
-        unreachable!("List should never be packed.")
-    }
-
-    fn tree_hash_packing_factor() -> usize {
-        // in ssz merkleization spec, only basic types are packed
-        unreachable!("List should never be packed.")
-    }
-
-    fn tree_hash_root(&self) -> tree_hash::Hash256 {
-        // When generating the hash root of a list of composite objects, the complete procedure is here:
-        // https://github.com/ethereum/py-ssz/blob/36f3406f814a5e5f4efb059a6928afc2d9d253b4/ssz/sedes/list.py#L113-L129
-        // Since we know each element is a composite object, we can simplify the python by removing some branches, to:
-        // mix_in_length(merkleize([hash_tree_root(element) for element in value], limit=chunk_count(type)), len(value))
-        let hash_tree_roots: Vec<tree_hash::Hash256> = self
-            .header_records
-            .iter()
-            .map(|record| tree_hash::merkle_root(&record.as_ssz_bytes(), 0))
-            .collect();
-
-        let mut current_epoch_hasher = MerkleHasher::with_leaves(EPOCH_SIZE);
-        for root in &hash_tree_roots {
-            current_epoch_hasher.write(root.as_bytes()).unwrap();
-        }
-        let current_epoch_root = current_epoch_hasher
-            .finish()
-            .expect("Invalid epoch accumulator state: Too many epochs.");
-        tree_hash::mix_in_length(&current_epoch_root, hash_tree_roots.len())
-    }
 }
 
 /// Individual record for a historical header.
@@ -617,5 +647,32 @@ mod test {
             .push(header_record)
             .expect("Invalid accumulator state, more current epochs than allowed.");
         Ok(())
+    }
+
+    #[test]
+    fn xxx_header_proof() {
+        let macc = get_mainnet_master_acc();
+        let header_number = 200_000;
+        let header = get_header(header_number);
+        let epoch_acc_path = format!("./src/assets/0xf216…4c70.bin");
+        let raw_epoch_acc = fs::read(epoch_acc_path).unwrap();
+        let epoch_acc = EpochAccumulator::from_ssz_bytes(&raw_epoch_acc).unwrap();
+
+        // Lookup up header record index
+        let hr_index = header_number % EPOCH_SIZE as u64;
+        let hr_index = hr_index as usize;
+
+        // Lookup actual block hash & actual total difficulty
+        let actual_block_hash = epoch_acc.header_records[hr_index].block_hash;
+        let actual_difficulty = epoch_acc.header_records[hr_index].total_difficulty;
+
+        // 2 ** depth + index
+        let _generalized_index = EPOCH_SIZE ^ 2 + hr_index * 2;
+
+        // MasterAccumulator.generate_proof
+        let proof = macc.generate_proof(&header).unwrap();
+        println!("proof len: {:?}", proof.len());
+
+        macc.verify_header_with_proof(&header, proof).unwrap();
     }
 }
