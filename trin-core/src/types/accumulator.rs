@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
+use eth2_hashing::hash32_concat;
 use ethereum_types::{H256, U256};
 //use rs_merkle::{algorithms::Sha256, MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};
@@ -157,40 +158,57 @@ impl MasterAccumulator {
         }
     }
 
-    pub fn generate_proof(&self, header: &Header) -> anyhow::Result<Vec<H256>> {
+    pub fn generate_proof(
+        &self,
+        header: &Header,
+        epoch_acc: HistoricalEpochsList,
+    ) -> anyhow::Result<Vec<H256>> {
         // assert header is pre merge
         println!("GENERATING PROOF");
         println!("----------------");
 
         // lookup epoch accumulator...
-        let epoch_acc_path = format!("./src/assets/0xf216…4c70.bin");
-        let raw_epoch_acc = fs::read(epoch_acc_path).unwrap();
-        let epoch_acc = EpochAccumulator::from_ssz_bytes(&raw_epoch_acc).unwrap();
+        //let epoch_acc_path = format!("./src/assets/0x5914...9c5d.bin");
+        //let raw_epoch_acc = fs::read(epoch_acc_path).unwrap();
 
         let epoch_index = self.get_epoch_index_of_header(header);
         let epoch_hash = self.historical_epochs[epoch_index as usize];
         assert_eq!(epoch_acc.tree_hash_root(), epoch_hash);
+        println!("orig: {:?}", epoch_acc.tree_hash_root());
+        println!(
+            "ssz: {:?}",
+            tree_hash::merkle_root(&ssz::ssz_encode(&epoch_acc), 0)
+        );
 
         let hr_index = (header.number % EPOCH_SIZE as u64) as usize;
-        let header_record = epoch_acc.header_records[hr_index];
-
-        println!(
-            "header record tree root hash: {:?}",
-            header_record.tree_hash_root()
-        );
+        let header_record = epoch_acc[hr_index];
 
         // Generating the proof
         let mut leaves = vec![];
-        for record in epoch_acc.header_records.into_iter() {
+        for record in epoch_acc.into_iter() {
             // block_hash == block_hash.tree_hash_root()
             leaves.push(record.tree_hash_root());
         }
         let merkle_tree = MerkleTree::create(&leaves, 13);
-        let (_leaf, mut proof) = merkle_tree.generate_proof(hr_index, 13).unwrap();
+        let (leaf, mut proof) = merkle_tree.generate_proof(hr_index, 13).unwrap();
+        println!("leaf: {:?}", leaf);
+        println!("proof: {:?}", proof);
         // im not convinced at all...
         // but here we insert the diff, and hr thr...
-        proof.insert(0, header_record.tree_hash_root());
-        proof.insert(0, header_record.total_difficulty.tree_hash_root());
+        //proof.insert(0, header_record.total_difficulty.tree_hash_root());
+        /*        proof.push(H256::from_slice(*/
+        /*&hex_decode("0x0020000000000000000000000000000000000000000000000000000000000000")*/
+        /*.unwrap(),*/
+        /*));*/
+        assert!(verify_merkle_proof(
+            leaf,
+            &proof,
+            13,
+            hr_index as usize,
+            //epoch_hash // root
+            merkle_tree.hash()
+        ));
+
         Ok(proof)
     }
 
@@ -202,17 +220,24 @@ impl MasterAccumulator {
         // assert header is pre merge
         println!("VERIFYING PROOF");
         println!("----------------");
+        println!("proof: {:?}", proof);
         // assert proof len is 15?
         let header_hash = header.hash();
+        let header_hash = H256::from_slice(
+            &hex_decode("0xfdd668874ec90380948ae8b615189a22037e4b36ee8d3e9b2ce7e8202ed09fbf")
+                .unwrap(),
+        );
+        println!("header hash: {:?}", header_hash);
         let hr_index = header.number % EPOCH_SIZE as u64;
 
+        println!("hr index 2: {:?}", hr_index);
         let epoch_index = self.get_epoch_index_of_header(header);
         let epoch_hash = self.historical_epochs[epoch_index as usize];
-
+        println!("epoch_hash: {:?}", epoch_hash);
         assert!(verify_merkle_proof(
             header_hash,
             &proof,
-            14,
+            13,
             hr_index as usize,
             epoch_hash // root
         ));
@@ -263,15 +288,6 @@ impl Default for MasterAccumulator {
             current_epoch: HeaderRecordList::empty(),
         }
     }
-}
-
-/// Data type responsible for maintaining a store
-/// of all header records within an epoch.
-// remove treehash trait
-// remove whole type?
-#[derive(Clone, Debug, Eq, PartialEq, Decode, Encode, Deserialize, Serialize, TreeHash)]
-pub struct EpochAccumulator {
-    pub header_records: HeaderRecordList,
 }
 
 /// Individual record for a historical header.
@@ -550,6 +566,7 @@ mod test {
             2 => rlp::decode(&hex::decode("f90218a088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794dd2f1e6e498202e86d8f5442af596580a4f03c2ca04943d941637411107494da9ec8bc04359d731bfd08b72b4d0edcbd4cd2ecb341a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff00100002821388808455ba4241a0476574682f76312e302e302d30636463373634372f6c696e75782f676f312e34a02f0790c5aa31ab94195e1f6443d645af5b75c46c04fbf9911711198a0ce8fdda88b853fa261a86aa9e").unwrap()).unwrap(),
             200_000 => rlp::decode(&hex::decode("f90213a07f27ffbccbbf32b53697930c508137e451e8de080231008d945c6e3ed631b74aa01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347941dcb8d1f0fcc8cbc8c2d76528e877f915e299fbea0632964149a2056cb246ccee21838d139516578712f13b2a7cbf0086969d0f4aba056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008605ae701ab58e83030d40832fefd8808455ee029596d583010102844765746885676f312e35856c696e7578a0f9d7884dab1938bd8100a4564a949256aedb8936ad3f72f48eaa679269560a65883ec79c2d077b8db2").unwrap()).unwrap(),
             MERGE_BLOCK_NUMBER => rlp::decode(&hex::decode("f9021ba02b3ea3cd4befcab070812443affb08bf17a91ce382c714a536ca3cacab82278ba01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794829bd824b016326a401d083b33d092293333a830a04919dafa6ac8becfbbd0c2808f6c9511a057c21e42839caff5dfb6d3ef514951a0dd5eec02b019ff76e359b09bfa19395a2a0e97bc01e70d8d5491e640167c96a8a0baa842cfd552321a9c2450576126311e071680a1258032219c6490b663c1dab8b90100000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000800000000000000000000000080000000000000000000000000000000000000000000000000200000000000000000008000000000040000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000084000000000010020000000000000000000000000000000000020000000200000000200000000000000000000000000000000000000000400000000000000000000000008727472e1db3626a83ed14f18401c9c3808401c9a205846322c96292e4b883e5bda9e7a59ee4bb99e9b1bc460021a04cbec03dddd4b939730a7fe6048729604d4266e82426d472a2b2024f3cc4043f8862a3ee77461d4fc9850a1a4e5f06").unwrap()).unwrap(),
+            1_000_001 => rlp::decode(&hex::decode("f90217a08e38b4dbf6b11fcc3b9dee84fb7986e29ca0a02cecd8977c161ff7333329681ea01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942a65aca4d5fc5b5c859090a6c34d164135398226a07dd4aabb93795feba9866821c0c7d6a992eda7fbdd412ea0f715059f9654ef23a0c61c50a0a2800ddc5e9984af4e6668de96aee1584179b3141f458ffa7d4ecec6a0b873ddefdb56d448343d13b188241a4919b2de10cccea2ea573acf8dbc839befb9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000860b6b4bbd735f830f4241832fefd88252088456bfb41a98d783010303844765746887676f312e352e31856c696e7578a0d5332614a151dd917b84fc5ff62580d7099edb7c37e0ac843d873de978d50352889112b8c2b377fbe8").unwrap()).unwrap(),
             _ => panic!("Test failed: header not available"),
         }
     }
@@ -649,30 +666,64 @@ mod test {
         Ok(())
     }
 
+    use crate::types::header::{BlockHeaderProof, HeaderWithProof, HeaderWithProofSsz};
+
     #[test]
     fn xxx_header_proof() {
+        let fluffy_number = 1_000_001;
+        let fluffy_key = "0x04cb5cab7266694daa0d28cbf40496c08dd30bf732c41e0455e7ad389c10d79f4f";
+        let fluffy_value = hex_decode("0x0800000022020000f90217a08e38b4dbf6b11fcc3b9dee84fb7986e29ca0a02cecd8977c161ff7333329681ea01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942a65aca4d5fc5b5c859090a6c34d164135398226a07dd4aabb93795feba9866821c0c7d6a992eda7fbdd412ea0f715059f9654ef23a0c61c50a0a2800ddc5e9984af4e6668de96aee1584179b3141f458ffa7d4ecec6a0b873ddefdb56d448343d13b188241a4919b2de10cccea2ea573acf8dbc839befb9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000860b6b4bbd735f830f4241832fefd88252088456bfb41a98d783010303844765746887676f312e352e31856c696e7578a0d5332614a151dd917b84fc5ff62580d7099edb7c37e0ac843d873de978d50352889112b8c2b377fbe801c971eaaa41600563000000000000000000000000000000000000000000000000629f9dbe275316ef21073133b8ecec062a44e20201be7b24a22c56db91df336f0c71aaaec1b3526027a54b15387ef014fcd18bb46e90e05657b46418fd326e785392c40ec6d38f000042798fee52ed833ff376b1d5a95dc7c2356dc8d8d02e30b704e9ee8e4d712920a18fd4e8833a7979a14e5b972d4b27958dcfa5187e3aa14d61c29c3fda0fb425078a0479c5ea375ff95ad7780d0cdc87012009fd4a3dd003b06c7a28d6188e6be50ac544548cc7e3ee6cd07a8129f5c6d4d494b62ee8d96d26d0875bc87b56be0bf3e45846c0e3773abfccc239fdab29640b4e2aef297efcc6cb89b00a2566221cb4197ece3f66c24ea89969bd16265a74910aaf08d775116191117416b8799d0984f452a6fba19623442a7f199ef1627f1ae7295963a67db5534a292f98edbfb419ed85756abe76cd2d2bff8eb9b848b1e7b80b8274bbc469a36dce58b48ae57be6312bca843463ac45c54122a9f3fa9dca124b0fd50bce300708549c77b81b031278b9d193464f5e4b14769f6018055a457a577c508e811bcf55b297df3509f3db7e66ec68451e25acfbf935200e246f71e3c48240d00020000000000000000000000000000000000000000000000000000000000000").unwrap();
+        let fluff = HeaderWithProofSsz::from_ssz_bytes(&fluffy_value).unwrap();
+        let fluff = HeaderWithProof {
+            header: rlp::decode(&fluff.header).unwrap(),
+            proof: fluff.proof,
+        };
+        println!("fluff: {:?}", fluff);
         let macc = get_mainnet_master_acc();
-        let header_number = 200_000;
+        let header_number = 1_000_001;
         let header = get_header(header_number);
-        let epoch_acc_path = format!("./src/assets/0xf216…4c70.bin");
-        let raw_epoch_acc = fs::read(epoch_acc_path).unwrap();
-        let epoch_acc = EpochAccumulator::from_ssz_bytes(&raw_epoch_acc).unwrap();
+        let _epoch_acc_path = format!("./src/assets/0xcddb...f38d.bin");
+        let fluff_acc = format!("./src/assets/fluff_acc.bin");
+        let ultra_acc = format!("./src/assets/ultra_epoch_acc.hex");
+        let ultra_acc = fs::read_to_string(ultra_acc).unwrap();
+        let ultra_acc = hex::decode(&ultra_acc).unwrap();
+        let ultra_acc = HistoricalEpochsList::from_ssz_bytes(&ultra_acc).unwrap();
+        println!("ultra; {:?}", ultra_acc.tree_hash_root());
+        let fluff_acc = fs::read(fluff_acc).unwrap();
+        let fluff_acc = HistoricalEpochsList::from_ssz_bytes(&fluff_acc).unwrap();
+        let fluff_macc = format!("./src/assets/fluff_macc.bin");
+        let fluff_macc = fs::read(fluff_macc).unwrap();
 
         // Lookup up header record index
-        let hr_index = header_number % EPOCH_SIZE as u64;
+        let hr_index = fluffy_number % EPOCH_SIZE as u64;
         let hr_index = hr_index as usize;
+        let fluff_macc = MasterAccumulator::from_ssz_bytes(&fluff_macc).unwrap();
+        println!(
+            "fluff_macc epoch: {:?}",
+            fluff_macc.historical_epochs[hr_index]
+        );
 
         // Lookup actual block hash & actual total difficulty
-        let actual_block_hash = epoch_acc.header_records[hr_index].block_hash;
-        let actual_difficulty = epoch_acc.header_records[hr_index].total_difficulty;
+        let actual_epoch_hash = macc.historical_epochs[hr_index];
+        println!("local epoch hash: {:?}", actual_epoch_hash);
 
         // 2 ** depth + index
         let _generalized_index = EPOCH_SIZE ^ 2 + hr_index * 2;
 
         // MasterAccumulator.generate_proof
-        let proof = macc.generate_proof(&header).unwrap();
-        println!("proof len: {:?}", proof.len());
+        let proof = macc.generate_proof(&header, fluff_acc).unwrap();
+        let fluff_prooff = match fluff.proof {
+            BlockHeaderProof::AccumulatorProof(val) => val,
+            _ => panic!("xxx"),
+        };
+        //assert_eq!(proof, fluff_prooff.proof);
+        //println!("fuck ya");
+        //println!("proof len: {:?}", proof.len());
 
-        macc.verify_header_with_proof(&header, proof).unwrap();
+        //let proof = match fluff.proof {
+        //BlockHeaderProof::None(_) => panic!("fuck"),
+        //BlockHeaderProof::AccumulatorProof(val) => val,
+        //};
+        macc.verify_header_with_proof(&fluff.header, proof).unwrap();
     }
 }

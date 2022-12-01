@@ -48,12 +48,6 @@ pub struct Header {
     pub base_fee_per_gas: Option<U256>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HeaderWithProof {
-    pub header: Header,
-    pub proof: Proof,
-}
-
 fn raw_bytes<S>(value: &Option<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -235,39 +229,112 @@ impl Decodable for Header {
     }
 }
 
-impl Decodable for HeaderWithProof {
-    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        let header: Header = rlp.val_at(0)?;
-        let proof: Proof = rlp.val_at(1)?;
-        Ok(Self { header, proof })
-    }
+use crate::portalnet::types::messages::ByteList;
+//use ssz::SszDecoderBuilder;
+use ssz_derive::Decode;
+use ssz_types::{typenum, VariableList};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeaderWithProof {
+    pub header: Header,
+    pub proof: BlockHeaderProof,
+}
+
+#[derive(Debug, Clone, PartialEq, Decode)]
+pub struct HeaderWithProofSsz {
+    pub header: ByteList,
+    pub proof: BlockHeaderProof,
+}
+
+#[derive(Debug, Clone, PartialEq, Decode)]
+#[ssz(enum_behaviour = "union")]
+pub enum BlockHeaderProof {
+    None(SszNone),
+    AccumulatorProof(AccumulatorProof),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Proof {
+pub struct AccumulatorProof {
     pub proof: [H256; 15],
 }
 
-impl Decodable for Proof {
-    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        let proof: [H256; 15] = [
-            rlp.val_at(0)?,
-            rlp.val_at(1)?,
-            rlp.val_at(2)?,
-            rlp.val_at(3)?,
-            rlp.val_at(4)?,
-            rlp.val_at(5)?,
-            rlp.val_at(6)?,
-            rlp.val_at(7)?,
-            rlp.val_at(8)?,
-            rlp.val_at(9)?,
-            rlp.val_at(10)?,
-            rlp.val_at(11)?,
-            rlp.val_at(12)?,
-            rlp.val_at(13)?,
-            rlp.val_at(14)?,
-        ];
-        Ok(Self { proof })
+/*impl ssz::Decode for HeaderWithProof {*/
+/*fn is_ssz_fixed_len() -> bool {*/
+/*false*/
+/*}*/
+
+/*fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {*/
+/*let mut builder = SszDecoderBuilder::new(bytes);*/
+
+/*builder.register_type::<ByteList>()?;*/
+/*builder.register_type::<BlockHeaderProof>()?;*/
+
+/*let mut decoder = builder.build()?;*/
+
+/*let header_rlp = decoder.decode_next()?;*/
+/*let proof = decoder.decode_next()?;*/
+/*let header: Header = rlp::decode(header_rlp).unwrap();*/
+
+/*Ok(Self { header, proof })*/
+/*}*/
+/*}*/
+
+impl ssz::Decode for AccumulatorProof {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        let vec: Vec<[u8; 32]> = Vec::from_ssz_bytes(bytes)?;
+        let mut fin: [H256; 15] = [H256::zero(); 15];
+        let xxx: [[u8; 32]; 15] = vec
+            .try_into()
+            .unwrap_or_else(|_| panic!("Expected a Vec of length but it was "));
+        for (i, v) in xxx.iter().enumerate() {
+            fin[i] = H256::from_slice(v);
+        }
+        Ok(Self { proof: fin })
+    }
+}
+
+/// Struct to represent encodable/decodable None value for an SSZ enum
+#[derive(Clone, Debug, PartialEq)]
+pub struct SszNone {
+    // In rust, None is a variant not a type,
+    // so we must use Option here to represent a None value
+    value: Option<()>,
+}
+
+impl SszNone {
+    pub fn new() -> Self {
+        Self { value: None }
+    }
+}
+
+impl ssz::Decode for SszNone {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        match bytes.len() {
+            0 => Ok(Self { value: None }),
+            _ => Err(ssz::DecodeError::BytesInvalid(
+                "Expected None value to be empty, found bytes.".to_string(),
+            )),
+        }
+    }
+}
+
+impl ssz::Encode for SszNone {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_append(&self, _buf: &mut Vec<u8>) {}
+
+    fn ssz_bytes_len(&self) -> usize {
+        0
     }
 }
 

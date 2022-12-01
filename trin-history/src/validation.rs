@@ -11,7 +11,7 @@ use tree_hash::TreeHash;
 use trin_core::{
     portalnet::types::content_key::HistoryContentKey,
     types::{
-        accumulator::EpochAccumulator,
+        accumulator::HistoricalEpochsList,
         block_body::BlockBody,
         header::{Header, HeaderWithProof},
         receipts::Receipts,
@@ -46,13 +46,13 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
             HistoryContentKey::BlockHeaderWithProof(key) => {
                 error!("GOT IT XXXXXXXXX");
                 error!("key: {:?}", key);
-                let header_with_proof: HeaderWithProof = rlp::decode(content)?;
-                error!("header: {:?}", header_with_proof.header);
-                error!("proof: {:?}", header_with_proof.proof);
+                //let header_with_proof: HeaderWithProof = rlp::decode(content)?;
+                let header: Header = rlp::decode(content)?;
                 self.header_oracle
                     .write()
                     .await
-                    .validate_header_is_canonical(header_with_proof.header)
+                    .validate_header_is_canonical(header)
+                    //.validate_header_is_canonical(header_with_proof.header)
                     .await
             }
             HistoryContentKey::BlockBody(key) => {
@@ -101,7 +101,7 @@ impl Validator<HistoryContentKey> for ChainHistoryValidator {
                 Ok(())
             }
             HistoryContentKey::EpochAccumulator(key) => {
-                let epoch_acc = EpochAccumulator::from_ssz_bytes(content).map_err(|msg| {
+                let epoch_acc = HistoricalEpochsList::from_ssz_bytes(content).map_err(|msg| {
                     anyhow!("Epoch Accumulator content has invalid encoding: {:?}", msg)
                 })?;
 
@@ -390,7 +390,7 @@ mod tests {
     async fn validate_epoch_acc() {
         let server = setup_mock_infura_server();
         let epoch_acc = std::fs::read("./../trin-core/src/assets/0x5ec1…4218.bin").unwrap();
-        let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap();
+        let epoch_acc = HistoricalEpochsList::from_ssz_bytes(&epoch_acc).unwrap();
         let header_oracle = default_header_oracle(server.url("/14764013"));
         let chain_history_validator = ChainHistoryValidator { header_oracle };
         let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey {
@@ -408,17 +408,18 @@ mod tests {
     async fn invalidate_epoch_acc_with_invalid_root_hash() {
         let server = setup_mock_infura_server();
         let epoch_acc = std::fs::read("./../trin-core/src/assets/0x5ec1…4218.bin").unwrap();
-        let mut epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap();
+        let mut epoch_acc = HistoricalEpochsList::from_ssz_bytes(&epoch_acc).unwrap();
         let header_oracle = default_header_oracle(server.url("/14764013"));
         let chain_history_validator = ChainHistoryValidator { header_oracle };
         let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey {
             epoch_hash: epoch_acc.tree_hash_root(),
         });
 
-        epoch_acc.header_records[0] = HeaderRecord {
+        epoch_acc[0] = HeaderRecord {
             block_hash: H256::random(),
             total_difficulty: U256::from_dec_str("0").unwrap(),
-        };
+        }
+        .tree_hash_root();
         let invalid_content = epoch_acc.as_ssz_bytes();
 
         chain_history_validator
@@ -432,14 +433,15 @@ mod tests {
     async fn invalidate_epoch_acc_missing_from_master_acc() {
         let server = setup_mock_infura_server();
         let epoch_acc = std::fs::read("./../trin-core/src/assets/0x5ec1…4218.bin").unwrap();
-        let mut epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap();
+        let mut epoch_acc = HistoricalEpochsList::from_ssz_bytes(&epoch_acc).unwrap();
         let header_oracle = default_header_oracle(server.url("/14764013"));
         let chain_history_validator = ChainHistoryValidator { header_oracle };
 
-        epoch_acc.header_records[0] = HeaderRecord {
+        epoch_acc[0] = HeaderRecord {
             block_hash: H256::random(),
             total_difficulty: U256::from_dec_str("0").unwrap(),
-        };
+        }
+        .tree_hash_root();
         let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey {
             epoch_hash: epoch_acc.tree_hash_root(),
         });
