@@ -2,8 +2,8 @@ use ethereum_types::{Bloom, H160, H256, H64, U256};
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use ssz::SszDecoderBuilder;
-use ssz_derive::Decode;
+use ssz::{Encode, SszDecoderBuilder, SszEncoder};
+use ssz_derive::{Decode, Encode};
 
 use crate::portalnet::types::messages::ByteList;
 use crate::types::block_body::Transaction;
@@ -269,7 +269,7 @@ pub struct HeaderWithProof {
     pub proof: BlockHeaderProof,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Decode, Encode)]
 #[ssz(enum_behaviour = "union")]
 // Ignore clippy here, since "box"-ing the accumulator proof breaks the Decode trait
 #[allow(clippy::large_enum_variant)]
@@ -281,6 +281,27 @@ pub enum BlockHeaderProof {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AccumulatorProof {
     pub proof: [H256; 15],
+}
+
+impl ssz::Encode for AccumulatorProof {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        let offset = <AccumulatorProof as Encode>::ssz_fixed_len();
+
+        let mut encoder = SszEncoder::container(buf, offset);
+        for l in self.proof {
+            encoder.append(&l);
+        }
+
+        encoder.finalize();
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        <H256 as Encode>::ssz_fixed_len() * 15
+    }
 }
 
 impl ssz::Decode for HeaderWithProof {
@@ -311,10 +332,21 @@ impl ssz::Encode for HeaderWithProof {
         false
     }
 
-    fn ssz_append(&self, _buf: &mut Vec<u8>) {}
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        let header = rlp::encode(&self.header).to_vec();
+        let header: ByteList = ByteList::from(header);
+        let offset =
+            <ByteList as Encode>::ssz_fixed_len() + <AccumulatorProof as Encode>::ssz_fixed_len();
+        let mut encoder = SszEncoder::container(buf, offset);
+        encoder.append(&header);
+        encoder.append(&self.proof);
+        encoder.finalize();
+    }
 
     fn ssz_bytes_len(&self) -> usize {
-        0
+        let header = rlp::encode(&self.header).to_vec();
+        let header: ByteList = ByteList::from(header);
+        header.len() + self.proof.ssz_bytes_len()
     }
 }
 
@@ -378,7 +410,7 @@ mod tests {
 
     use hex;
     use serde_json::{json, Value};
-    use ssz::Decode;
+    use ssz::{Decode, Encode};
     use test_log::test;
 
     use crate::types::block_body::{BlockBody, EncodableHeaderList};
@@ -474,6 +506,8 @@ mod tests {
             let proof = obj.get("value").unwrap().as_str().unwrap();
             let header = HeaderWithProof::from_ssz_bytes(&hex_decode(proof).unwrap()).unwrap();
             assert_eq!(block_number, header.header.number);
+            let encoded = hex_encode(header.as_ssz_bytes());
+            assert_eq!(encoded, proof);
         }
     }
 
