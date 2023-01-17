@@ -531,7 +531,7 @@ pub struct Offer {
 #[derive(Debug, Clone)]
 pub struct PopulatedOffer {
     /// All the offered content, pairing the keys and values
-    pub content_items: Vec<(RawContentKey, ByteList)>,
+    pub content_items: Vec<(RawContentKey, Vec<u8>)>,
 }
 
 impl Into<Offer> for PopulatedOffer {

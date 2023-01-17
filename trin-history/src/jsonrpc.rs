@@ -20,6 +20,7 @@ use trin_core::{
         types::{
             content_key::{HistoryContentKey, OverlayContentKey},
             distance::{Metric, XorMetric},
+            messages::ByteList,
         },
     },
     utils::bytes::hex_encode,
@@ -215,13 +216,18 @@ impl HistoryRequestHandler {
                     };
                     let _ = request.resp.send(response);
                 }
+                //
+                //
+                // ok.. the next thing to do is get this branch up on the cloud node, and see if it
+                // correctly decodes the blck body... but also print out content len pre-validation
+                //
+                //
                 HistoryEndpoint::Offer => {
                     let response = match OfferParams::<HistoryContentKey>::try_from(request.params)
                     {
                         Ok(params) => {
                             let content_key = params.content_key.clone();
-                            let content = params.content.into();
-                            let content_items = vec![(content_key, content)];
+                            let content_items = vec![(content_key, params.content)];
                             let num_peers = self.network.overlay.propagate_gossip(content_items);
                             Ok(num_peers.into())
                         }

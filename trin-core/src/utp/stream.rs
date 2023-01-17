@@ -659,13 +659,18 @@ impl UtpStream {
         }
 
         let total_length = buf.len();
+        error!("total length: {:?}", total_length);
 
-        for chunk in buf.chunks(
-            MAX_DISCV5_PACKET_SIZE as usize
-                - MAX_DISCV5_HEADER_SIZE
-                - PAYLOAD_LENGTH_SIZE
-                - HEADER_SIZE,
-        ) {
+        for (idx, chunk) in buf
+            .chunks(
+                MAX_DISCV5_PACKET_SIZE as usize
+                    - MAX_DISCV5_HEADER_SIZE
+                    - PAYLOAD_LENGTH_SIZE
+                    - HEADER_SIZE,
+            )
+            .enumerate()
+        {
+            error!("chunk #{:?} - len: {:?}", idx, chunk.len());
             let mut packet = Packet::with_payload(chunk);
             packet.set_seq_nr(self.seq_nr);
             packet.set_ack_nr(self.ack_nr);

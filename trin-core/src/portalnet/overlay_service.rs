@@ -1268,6 +1268,7 @@ where
     // Process ACCEPT response
     fn process_accept(&self, response: Accept, enr: Enr, offer: Request) -> anyhow::Result<Accept> {
         // Check that a valid triggering request was sent
+        // wut
         match &offer {
             Request::Offer(_) => {}
             Request::PopulatedOffer(_) => {}
@@ -1599,7 +1600,7 @@ where
         store: Arc<RwLock<TStore>>,
         accept_message: &Accept,
         content_keys_offered: Vec<RawContentKey>,
-    ) -> anyhow::Result<Vec<ByteList>> {
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
         let content_keys_offered: Result<Vec<TContentKey>, TContentKey::Error> =
             content_keys_offered
                 .into_iter()
@@ -1609,7 +1610,7 @@ where
         let content_keys_offered: Vec<TContentKey> = content_keys_offered
             .map_err(|_| anyhow!("Unable to decode our own offered content keys"))?;
 
-        let mut content_items: Vec<ByteList> = Vec::new();
+        let mut content_items: Vec<Vec<u8>> = Vec::new();
 
         for (i, key) in accept_message
             .content_keys

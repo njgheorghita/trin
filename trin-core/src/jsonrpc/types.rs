@@ -263,7 +263,9 @@ impl<TContentKey: OverlayContentKey> TryFrom<[&Value; 2]> for OfferParams<TConte
     type Error = ValidationError;
 
     fn try_from(params: [&Value; 2]) -> Result<Self, Self::Error> {
+        println!("init: {:?}", params[1].as_str().unwrap().len());
         let (content_key, content) = parse_content_item(params)?;
+        println!("finished: {:?}", content.len());
         Ok(Self {
             content_key,
             content,

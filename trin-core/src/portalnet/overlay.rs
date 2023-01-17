@@ -319,7 +319,6 @@ where
                                 );
                             }
                         }
-
                         Some((key, content_value))
                     })
                 })
@@ -329,6 +328,7 @@ where
                 .into_iter()
                 // Whether the spawn fails or the content fails validation, we don't want it:
                 .filter_map(|content| content.unwrap_or(None))
+                .map(|(y, x)| (y, x.to_vec()))
                 .collect();
             // Propagate all validated content, whether or not it was stored.
             Self::propagate_gossip_cross_thread(validated_content, kbuckets, command_tx);
@@ -337,7 +337,8 @@ where
     }
 
     /// Propagate gossip accepted content via OFFER/ACCEPT, return number of peers propagated
-    pub fn propagate_gossip(&self, content: Vec<(TContentKey, ByteList)>) -> usize {
+    pub fn propagate_gossip(&self, content: Vec<(TContentKey, Vec<u8>)>) -> usize {
+        println!("pgossip: {:?}", content[0].1.len());
         let kbuckets = Arc::clone(&self.kbuckets);
         let command_tx = self.command_tx.clone();
         Self::propagate_gossip_cross_thread(content, kbuckets, command_tx)
@@ -345,7 +346,7 @@ where
 
     // Propagate gossip in a way that can be used across threads, without &self
     fn propagate_gossip_cross_thread(
-        content: Vec<(TContentKey, ByteList)>,
+        content: Vec<(TContentKey, Vec<u8>)>,
         kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
         command_tx: UnboundedSender<OverlayCommand<TContentKey>>,
     ) -> usize {
@@ -363,11 +364,10 @@ where
 
         // HashMap to temporarily store all interested ENRs and the content.
         // Key is base64 string of node's ENR.
-        let mut enrs_and_content: HashMap<String, Vec<(RawContentKey, ByteList)>> = HashMap::new();
+        let mut enrs_and_content: HashMap<String, Vec<(RawContentKey, Vec<u8>)>> = HashMap::new();
 
         // Filter all nodes from overlay routing table where XOR_distance(content_id, nodeId) < node radius
         for (content_key, content_value) in content {
-            println!("xx: {:?}", content_value.len());
             let interested_enrs: Vec<Enr> = all_nodes
                 .clone()
                 .into_iter()
@@ -420,7 +420,7 @@ where
             };
 
             let offer_request = Request::PopulatedOffer(PopulatedOffer {
-                content_items: interested_content,
+                content_items: interested_content, // ByteList
             });
 
             let overlay_request = OverlayRequest::new(
