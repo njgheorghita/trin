@@ -5,10 +5,10 @@ use std::io::{Read, Write};
 
 /// Decode content values from uTP payload. All content values are encoded with a LEB128 varint prefix
 /// which indicates the length in bytes of the consecutive content item.
-pub fn decode_content_payload(payload: Vec<u8>) -> anyhow::Result<Vec<ByteList>> {
+pub fn decode_content_payload(payload: Vec<u8>) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut payload = BytesMut::from(&payload[..]).reader();
 
-    let mut content_values: Vec<ByteList> = Vec::new();
+    let mut content_values: Vec<Vec<u8>> = Vec::new();
 
     // Read LEB128 encoded index and content items until all payload bytes are consumed
     while !payload.get_ref().is_empty() {

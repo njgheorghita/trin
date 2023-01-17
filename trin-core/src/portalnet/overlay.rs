@@ -597,7 +597,7 @@ where
         }
     }
 
-    /// Initialize FIndContent uTP stream with remote node
+    /// Initialize FindContent uTP stream with remote node
     async fn init_find_content_stream(
         &self,
         enr: Enr,
