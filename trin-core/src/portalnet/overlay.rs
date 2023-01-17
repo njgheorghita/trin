@@ -583,7 +583,7 @@ where
                             .validate_content(&content_key, &content)
                             .await
                         {
-                            Ok(_) => Ok(Content::Content(VariableList::from(content))),
+                            Ok(_) => Ok(Content::Content(content)),
                             Err(msg) => Err(OverlayRequestError::FailedValidation(format!(
                                 "Network: {:?}, Reason: {:?}",
                                 self.protocol, msg

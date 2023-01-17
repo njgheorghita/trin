@@ -973,19 +973,19 @@ where
         };
         match self.store.read().get(&content_key) {
             Ok(Some(value)) => {
-                let content = ByteList::from(VariableList::from(value));
+                //let content = ByteList::from(VariableList::from(value));
 
                 // Check content size and initiate uTP connection if the size is over the threshold
                 // TODO: Properly calculate max content size
-                if content.len() < 1000 {
-                    Ok(Content::Content(content))
+                if value.len() < 1000 {
+                    Ok(Content::Content(value))
                 } else {
                     let conn_id: u16 = crate::utp::stream::rand();
 
                     // Listen for incoming uTP connection request on as part of uTP handshake and
                     // storing content data, so we can send it inside UtpListener right after we receive
                     // SYN packet from the requester
-                    self.add_utp_connection(source, conn_id, UtpStreamId::ContentStream(content))?;
+                    self.add_utp_connection(source, conn_id, UtpStreamId::ContentStream(value))?;
 
                     // Connection id is send as BE because uTP header values are stored also as BE
                     Ok(Content::ConnectionId(conn_id.to_be()))
@@ -1445,7 +1445,7 @@ where
         }
     }
 
-    fn process_received_content(&mut self, content: ByteList, request: FindContent) {
+    fn process_received_content(&mut self, content: Vec<u8>, request: FindContent) {
         let content_key = match TContentKey::try_from(request.content_key) {
             Ok(val) => val,
             Err(msg) => {
@@ -1470,10 +1470,7 @@ where
                 // Spawn task that validates content before storing.
                 // Allows for non-blocking requests to this/other overlay services.
                 tokio::spawn(async move {
-                    if let Err(err) = validator
-                        .validate_content(&content_key, &content.to_vec())
-                        .await
-                    {
+                    if let Err(err) = validator.validate_content(&content_key, &content).await {
                         warn!(
                             error = ?err,
                             content.id = %hex_encode_compact(content_id),

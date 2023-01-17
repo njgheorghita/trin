@@ -500,7 +500,7 @@ pub struct FindContent {
 #[ssz(enum_behaviour = "union")]
 pub enum Content {
     ConnectionId(u16),
-    Content(ByteList),
+    Content(Vec<u8>),
     Enrs(Vec<SszEnr>),
 }
 
