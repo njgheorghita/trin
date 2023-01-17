@@ -488,6 +488,15 @@ impl Bridge {
             block_hash: full_header.header.hash().to_fixed_bytes(),
         });
         let content_key: Vec<u8> = content_key.into();
+        ///
+
+        println!("XXX");
+        let xxx = block_body.as_ssz_bytes();
+        println!("content_key: {:?}", hex_encode(&content_key));
+        println!("content_value: {:?}", hex_encode(xxx));
+
+        ///
+        ///
         debug!("Offer: Block #{:?} BlockBody", full_header.header.number);
         Bridge::offer_content(
             tx,

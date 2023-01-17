@@ -367,6 +367,7 @@ where
 
         // Filter all nodes from overlay routing table where XOR_distance(content_id, nodeId) < node radius
         for (content_key, content_value) in content {
+            println!("xx: {:?}", content_value.len());
             let interested_enrs: Vec<Enr> = all_nodes
                 .clone()
                 .into_iter()
