@@ -195,6 +195,8 @@ where
         &self,
         talk_request: &TalkRequest,
     ) -> Result<Response, OverlayRequestError> {
+        let span = tracing::span!(tracing::Level::INFO, "xxx");
+        tracing::event!(parent: &span, tracing::Level::INFO, "process_one_request");
         let request = match Message::try_from(Vec::<u8>::from(talk_request.body())) {
             Ok(message) => match Request::try_from(message) {
                 Ok(request) => request,

@@ -87,6 +87,8 @@ pub async fn run_trin(
             (None, None, None, None, None)
         };
 
+    //let msgs = 0usize;
+    //let _span = tracing::span!(tracing::Level::INFO, "parent span", msgs).entered();
     // Initialize chain history sub-network service and event handlers, if selected
     let (
         history_handler,

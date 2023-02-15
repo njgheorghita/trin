@@ -35,7 +35,7 @@ impl HistoryEvents {
             let reply = match network
                 .overlay
                 .process_one_request(&talk_request)
-                .instrument(tracing::info_span!("history_network"))
+                //.instrument(tracing::info_span!("history_network"))
                 .await
             {
                 Ok(response) => Message::from(response).into(),
