@@ -1,14 +1,14 @@
-use crate::types::content_key::HistoryContentKey;
 use crate::types::enr::Enr;
 use crate::types::portal::FindNodesInfo;
 use crate::types::{
-    content_item::HistoryContentItem,
     discv5::{NodeId, RoutingTableInfo},
     portal::{
         AcceptInfo, ContentInfo, DataRadius, PaginateLocalContentInfo, PongInfo, TraceContentInfo,
     },
 };
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use trin_types::content_item::HistoryContentItem;
+use trin_types::content_key::HistoryContentKey;
 
 /// Portal History JSON-RPC endpoints
 #[rpc(client, server, namespace = "portal")]

@@ -254,7 +254,7 @@ pub fn validate_portal_offer(result: AcceptInfo, _peertest: &Peertest) {
 }
 
 pub fn validate_portal_local_content(result: &Value, _peertest: &Peertest) {
-    assert_eq!(result.as_str().unwrap(), "0x0");
+    assert_eq!(result.as_str().unwrap(), "0x");
 }
 
 #[cfg(unix)]

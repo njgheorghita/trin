@@ -61,8 +61,7 @@ impl HistoryRequestHandler {
                     let _ = request.resp.send(response);
                 }
                 HistoryEndpoint::Store(content_key, content_item) => {
-                    let mut data = vec![];
-                    content_item.encode(&mut data);
+                    let data = content_item.encode();
                     let response = match self
                         .network
                         .overlay
@@ -119,8 +118,7 @@ impl HistoryRequestHandler {
                     let _ = request.resp.send(response);
                 }
                 HistoryEndpoint::Gossip(content_key, content_item) => {
-                    let mut data = vec![];
-                    content_item.encode(&mut data);
+                    let data = content_item.encode();
                     let content_items = vec![(content_key, data)];
                     let num_peers = self.network.overlay.propagate_gossip(content_items);
                     let response = Ok(num_peers.into());
@@ -128,8 +126,7 @@ impl HistoryRequestHandler {
                 }
                 HistoryEndpoint::Offer(enr, content_key, content_value) => {
                     let response = if let Some(content_value) = content_value {
-                        let mut content_item = vec![];
-                        content_value.encode(&mut content_item);
+                        let content_item = content_value.encode();
                         match self
                             .network
                             .overlay
