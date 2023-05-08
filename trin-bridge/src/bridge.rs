@@ -5,12 +5,15 @@ use anyhow::{anyhow, bail};
 use ethereum_types::H256;
 use ethportal_api::jsonrpsee::http_client::HttpClient;
 use ethportal_api::HistoryNetworkApiClient;
+use futures::channel::oneshot;
+use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use ssz::Decode;
 use std::env;
 use std::fs;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
@@ -45,6 +48,8 @@ const HEADER_SATURATION_DELAY: u64 = 10; // seconds
 const LATEST_BLOCK_POLL_RATE: u64 = 5; // seconds
 const BACKFILL_THREAD_COUNT: usize = 8;
 const EPOCH_SIZE: u64 = EPOCH_SIZE_USIZE as u64;
+const BACKFILL_GROUP_SIZE: usize = 100_000;
+
 impl Bridge {
     // Devops nodes don't have websockets available, so we can't actually poll the latest block.
     // Instead we loop on a short interval and fetch the latest blocks not yet served.
@@ -98,7 +103,10 @@ impl Bridge {
         }
     }
 
-    pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
+    // stop once we reach latest block
+    // 3 retries for any given "STEP"
+    // buffer futures
+    pub async fn launch_buffered_backfill(&self, starting_epoch: Option<u64>) {
         let latest_block = get_latest_block_number().await.expect(
             "Error launching bridge in backfill mode. Unable to get latest block from provider.",
         );
@@ -115,21 +123,111 @@ impl Bridge {
             None => 0,
         };
         let current_epoch = latest_block / EPOCH_SIZE;
+        use futures::stream::{self, StreamExt};
+
+        while epoch_index < current_epoch {
+            let merge_epoch = MERGE_BLOCK_NUMBER / EPOCH_SIZE;
+            let epoch_acc = if epoch_index > merge_epoch {
+                None
+            } else {
+                Some(self.get_epoch_acc(epoch_index).await.unwrap())
+            };
+            let mut fetches = futures::stream::iter(self.spawn_epoch_tasks(epoch_index, epoch_acc))
+                .buffer_unordered(16);
+            while let Some(fetch) = fetches.next().await {
+                fetch.unwrap();
+            }
+        }
+    }
+
+    pub fn spawn_epoch_tasks(
+        &self,
+        epoch_index: u64,
+        epoch_acc: Option<Arc<EpochAccumulator>>,
+    ) -> Vec<JoinHandle<()>> {
+        let starting_block = epoch_index * EPOCH_SIZE;
+        let mut handles = vec![];
+
+        for block in starting_block..starting_block + EPOCH_SIZE {
+            let epoch_acc = epoch_acc.clone();
+            let handle = tokio::spawn(async move {
+                let _ = Bridge::serve_block(block, epoch_acc).await;
+            });
+            handles.push(handle);
+        }
+        handles
+    }
+
+    pub async fn serve_block(
+        block: u64,
+        epoch_acc: Option<Arc<EpochAccumulator>>,
+    ) -> anyhow::Result<()> {
+        // header
+        // body
+        // receipts
+        Ok(())
+    }
+
+    pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
+        //let latest_block = get_latest_block_number().await.expect(
+        //"Error launching bridge in backfill mode. Unable to get latest block from provider.",
+        //);
+        let starting_epoch = Some(58);
+        let latest_block = 17_000_000;
+        let mut epoch_index = match starting_epoch {
+            Some(val) => {
+                if val * EPOCH_SIZE > latest_block {
+                    panic!(
+                        "Starting epoch is greater than current epoch. 
+                        Please specify a starting epoch that begins before the current block."
+                    );
+                }
+                val
+            }
+            None => 0,
+        };
+        let current_epoch = latest_block / EPOCH_SIZE;
         while epoch_index < current_epoch {
             let start = epoch_index * EPOCH_SIZE;
             let end = start + EPOCH_SIZE;
+            use std::time::Instant;
+            let now = Instant::now();
+
             // Using epoch_size chunks & epoch boundaries ensures that every
             // "chunk" shares an epoch accumulator avoiding the need to
             // look up the epoch acc on a header by header basis
             let block_range_to_gossip = Range { start, end };
-            let full_headers = match Bridge::get_headers(&block_range_to_gossip).await {
-                Ok(val) => val,
-                Err(msg) => {
-                    warn!("Error fetching headers in range: {block_range_to_gossip:?} - {msg:?}. Skipping iteration.");
-                    epoch_index += 1;
-                    continue;
-                }
-            };
+            let mut handles = vec![];
+            for b in block_range_to_gossip.clone() {
+                let handle = tokio::spawn(async move {
+                    let _ = get_block(b).await.unwrap();
+                });
+                handles.push(handle);
+            }
+            let stream_of_futures = stream::iter(handles);
+            let mut buffered = stream_of_futures.buffer_unordered(10);
+
+            while let Some(fetch) = buffered.next().await {
+                fetch.unwrap();
+            }
+            //futures::future::join_all(handles).await;
+            let elapsed = now.elapsed();
+            println!("Elapsed: {:.2?}", elapsed);
+            println!("Fetched headers for range: {block_range_to_gossip:?}");
+            info!("fetching headers in range: {block_range_to_gossip:?}");
+            /*            let full_headers = match Bridge::get_headers(&block_range_to_gossip).await {*/
+            /*Ok(val) => val,*/
+            /*Err(msg) => {*/
+            /*warn!("Error fetching headers in range: {block_range_to_gossip:?} - {msg:?}. Skipping iteration.");*/
+            /*epoch_index += 1;*/
+            /*continue;*/
+            /*}*/
+            /*};*/
+            //let elapsed = now.elapsed();
+            //println!("Elapsed: {:.2?}", elapsed);
+            //println!("Fetched headers for range: {block_range_to_gossip:?}");
+            break;
+            let full_headers = vec![];
             let mut gossip_batch = GossipBatch::new(
                 block_range_to_gossip.clone(),
                 Some(epoch_index),
@@ -229,7 +327,7 @@ impl Bridge {
 
     /// Attempt to lookup an epoch accumulator from local portal-accumulators path provided via cli
     /// arg. Fallback to retrieving epoch acc from network if unable to find epoch acc locally.
-    async fn get_epoch_acc(&self, epoch_index: u64) -> anyhow::Result<EpochAccumulator> {
+    async fn get_epoch_acc(&self, epoch_index: u64) -> anyhow::Result<Arc<EpochAccumulator>> {
         let epoch_hash = self.header_oracle.master_acc.historical_epochs[epoch_index as usize];
         let epoch_hash_pretty = hex_encode(epoch_hash);
         let epoch_hash_pretty = epoch_hash_pretty.trim_start_matches("0x");
@@ -246,11 +344,11 @@ impl Bridge {
             }
         };
         // Gossip epoch acc to network if found locally
-        let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash });
-        let content_value = HistoryContentValue::EpochAccumulator(local_epoch_acc.clone());
-        let _ =
-            Bridge::gossip_content(self.portal_clients.clone(), content_key, content_value).await;
-        Ok(local_epoch_acc)
+        //let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash });
+        //let content_value = HistoryContentValue::EpochAccumulator(local_epoch_acc.clone());
+        //let _ =
+        //Bridge::gossip_content(self.portal_clients.clone(), content_key, content_value).await;
+        Ok(Arc::new(local_epoch_acc))
     }
 
     /// Fetch batch of BlockBodies from provider & gossip them to the network
@@ -468,18 +566,17 @@ impl Bridge {
     async fn get_headers(range: &Range<u64>) -> anyhow::Result<Vec<FullHeader>> {
         let mut headers: Vec<FullHeader> = vec![];
         let ranges = get_ranges(range);
-        for range_set in ranges.chunks(BACKFILL_THREAD_COUNT) {
-            let futures: Vec<JoinHandle<anyhow::Result<Vec<FullHeader>>>> = (0..range_set.len())
-                .map(|t| Bridge::get_header_future(range_set[t].clone()))
-                .collect();
-            let mut results = Vec::with_capacity(futures.len());
-            for future in futures {
-                results.push(future.await?);
-            }
-            for result in results {
-                for h in result? {
-                    headers.push(h);
-                }
+        let mut handles = vec![];
+        for range_set in ranges {
+            let handle = Bridge::get_header_future(range_set);
+            handles.push(handle);
+        }
+        let finished = futures::future::join_all(handles).await;
+        //let mut results = Vec::with_capacity(result.len());
+        for res in finished {
+            let x = res??;
+            for fh in x {
+                headers.push(fh);
             }
         }
         Ok(headers)
@@ -540,6 +637,20 @@ impl GossipBatch {
 
 async fn get_latest_block_number() -> anyhow::Result<u64> {
     let params = Params::Array(vec![json!("latest"), json!(false)]);
+    let method = "eth_getBlockByNumber".to_string();
+    let request = json_request(method, params, 1);
+    let response = pandaops_batch_request(vec![request]).await?;
+    let response: Vec<Value> = serde_json::from_str(&response)?;
+    let result = response[0]
+        .get("result")
+        .ok_or_else(|| anyhow!("Unable to fetch latest block"))?;
+    let header: Header = serde_json::from_value(result.clone())?;
+    Ok(header.number)
+}
+
+async fn get_block(number: u64) -> anyhow::Result<u64> {
+    let block_number = format!("0x{:01X}", number);
+    let params = Params::Array(vec![json!(block_number), json!(false)]);
     let method = "eth_getBlockByNumber".to_string();
     let request = json_request(method, params, 1);
     let response = pandaops_batch_request(vec![request]).await?;

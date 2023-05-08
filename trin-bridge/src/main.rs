@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .args(["--web3-transport", "http"])
             .args(["--web3-http-address", &web3_http_address])
             .args(["--discovery-port", &discovery_port])
-            .args(["--bootnodes", "default"])
+            .args(["--bootnodes", "none"])
             .spawn()
             .expect("failed to spawn trin process");
         http_addresses.push(web3_http_address);
