@@ -1,11 +1,11 @@
 use crate::cli::BridgeMode;
 use crate::constants::PANDAOPS_URL;
+use crate::full_header::{FullHeader, FullHeaderBatch};
 use crate::utils::get_ranges;
 use anyhow::{anyhow, bail};
 use ethereum_types::H256;
 use ethportal_api::jsonrpsee::http_client::HttpClient;
 use ethportal_api::HistoryNetworkApiClient;
-use futures::channel::oneshot;
 use futures::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use ssz::Decode;
@@ -25,8 +25,7 @@ use trin_types::content_value::HistoryContentValue;
 use trin_types::execution::accumulator::EpochAccumulator;
 use trin_types::execution::block_body::{BlockBody, EncodableHeaderList};
 use trin_types::execution::header::{
-    AccumulatorProof, BlockHeaderProof, FullHeader, FullHeaderBatch, Header, HeaderWithProof,
-    SszNone,
+    AccumulatorProof, BlockHeaderProof, Header, HeaderWithProof, SszNone,
 };
 use trin_types::execution::receipts::Receipts;
 use trin_types::jsonrpc::params::Params;
@@ -47,9 +46,7 @@ pub struct Bridge {
 // todo: single block option
 const HEADER_SATURATION_DELAY: u64 = 10; // seconds
 const LATEST_BLOCK_POLL_RATE: u64 = 5; // seconds
-const BACKFILL_THREAD_COUNT: usize = 8;
 const EPOCH_SIZE: u64 = EPOCH_SIZE_USIZE as u64;
-const BACKFILL_GROUP_SIZE: usize = 100_000;
 
 impl Bridge {
     // Devops nodes don't have websockets available, so we can't actually poll the latest block.
@@ -98,8 +95,6 @@ impl Bridge {
         }
     }
 
-    // stop once we reach latest block
-    // buffer futures
     pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
         let latest_block = get_latest_block_number().await.expect(
             "Error launching bridge in backfill mode. Unable to get latest block from provider.",
@@ -171,18 +166,20 @@ impl Bridge {
 
     async fn serve_body_and_receipt(header: FullHeader) -> anyhow::Result<()> {
         if let Err(msg) = Bridge::spawn_body_task(vec![], header.clone()).await {
-            warn!(
-                "Error serving block body #{:?}: {msg:?}",
-                header.header.number
+            let msg = format!(
+                "Unable to serve block body #{:?}: {:?}",
+                header.header.number, msg
             );
-            bail!("fuck");
+            warn!(msg);
+            bail!(msg);
         }
         if let Err(msg) = Bridge::spawn_receipt_task(vec![], header.clone()).await {
-            warn!(
-                "Error serving block receipts #{:?}: {msg:?}",
-                header.header.number
+            let msg = format!(
+                "Unable to serve block receipts #{:?}: {:?}",
+                header.header.number, msg
             );
-            bail!("fuck");
+            warn!(msg);
+            bail!(msg);
         }
         Ok(())
     }
