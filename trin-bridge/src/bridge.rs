@@ -44,6 +44,7 @@ pub struct Bridge {
 }
 
 // todo: calculate / test optimal saturation delay
+// todo: single block option
 const HEADER_SATURATION_DELAY: u64 = 10; // seconds
 const LATEST_BLOCK_POLL_RATE: u64 = 5; // seconds
 const BACKFILL_THREAD_COUNT: usize = 8;
@@ -91,22 +92,15 @@ impl Bridge {
                 // Sleep for 5 seconds to allow headers to saturate network,
                 // since they must be available for body / receipt validation.
                 sleep(Duration::from_secs(HEADER_SATURATION_DELAY)).await;
-                if let Err(err) = self.serve_bodies(&mut gossip_batch).await {
-                    warn!("error gossiping bodies: {err:?}");
-                };
-                if let Err(err) = self.serve_receipts(&mut gossip_batch).await {
-                    warn!("error gossiping receipts: {err:?}");
-                };
-                gossip_batch.display_stats();
-                block_index = gossip_batch.range.end;
+                Bridge::serve_gossip_batch(gossip_batch).await;
+                block_index = latest_block + 1; // aka gossip_batch.range.end
             }
         }
     }
 
     // stop once we reach latest block
-    // 3 retries for any given "STEP"
     // buffer futures
-    pub async fn launch_buffered_backfill(&self, starting_epoch: Option<u64>) {
+    pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
         let latest_block = get_latest_block_number().await.expect(
             "Error launching bridge in backfill mode. Unable to get latest block from provider.",
         );
@@ -123,111 +117,23 @@ impl Bridge {
             None => 0,
         };
         let current_epoch = latest_block / EPOCH_SIZE;
-        use futures::stream::{self, StreamExt};
-
-        while epoch_index < current_epoch {
-            let merge_epoch = MERGE_BLOCK_NUMBER / EPOCH_SIZE;
-            let epoch_acc = if epoch_index > merge_epoch {
-                None
-            } else {
-                Some(self.get_epoch_acc(epoch_index).await.unwrap())
-            };
-            let mut fetches = futures::stream::iter(self.spawn_epoch_tasks(epoch_index, epoch_acc))
-                .buffer_unordered(16);
-            while let Some(fetch) = fetches.next().await {
-                fetch.unwrap();
-            }
-        }
-    }
-
-    pub fn spawn_epoch_tasks(
-        &self,
-        epoch_index: u64,
-        epoch_acc: Option<Arc<EpochAccumulator>>,
-    ) -> Vec<JoinHandle<()>> {
-        let starting_block = epoch_index * EPOCH_SIZE;
-        let mut handles = vec![];
-
-        for block in starting_block..starting_block + EPOCH_SIZE {
-            let epoch_acc = epoch_acc.clone();
-            let handle = tokio::spawn(async move {
-                let _ = Bridge::serve_block(block, epoch_acc).await;
-            });
-            handles.push(handle);
-        }
-        handles
-    }
-
-    pub async fn serve_block(
-        block: u64,
-        epoch_acc: Option<Arc<EpochAccumulator>>,
-    ) -> anyhow::Result<()> {
-        // header
-        // body
-        // receipts
-        Ok(())
-    }
-
-    pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
-        //let latest_block = get_latest_block_number().await.expect(
-        //"Error launching bridge in backfill mode. Unable to get latest block from provider.",
-        //);
-        let starting_epoch = Some(58);
-        let latest_block = 17_000_000;
-        let mut epoch_index = match starting_epoch {
-            Some(val) => {
-                if val * EPOCH_SIZE > latest_block {
-                    panic!(
-                        "Starting epoch is greater than current epoch. 
-                        Please specify a starting epoch that begins before the current block."
-                    );
-                }
-                val
-            }
-            None => 0,
-        };
-        let current_epoch = latest_block / EPOCH_SIZE;
         while epoch_index < current_epoch {
             let start = epoch_index * EPOCH_SIZE;
             let end = start + EPOCH_SIZE;
-            use std::time::Instant;
-            let now = Instant::now();
 
             // Using epoch_size chunks & epoch boundaries ensures that every
             // "chunk" shares an epoch accumulator avoiding the need to
             // look up the epoch acc on a header by header basis
             let block_range_to_gossip = Range { start, end };
-            let mut handles = vec![];
-            for b in block_range_to_gossip.clone() {
-                let handle = tokio::spawn(async move {
-                    let _ = get_block(b).await.unwrap();
-                });
-                handles.push(handle);
-            }
-            let stream_of_futures = stream::iter(handles);
-            let mut buffered = stream_of_futures.buffer_unordered(10);
-
-            while let Some(fetch) = buffered.next().await {
-                fetch.unwrap();
-            }
-            //futures::future::join_all(handles).await;
-            let elapsed = now.elapsed();
-            println!("Elapsed: {:.2?}", elapsed);
-            println!("Fetched headers for range: {block_range_to_gossip:?}");
             info!("fetching headers in range: {block_range_to_gossip:?}");
-            /*            let full_headers = match Bridge::get_headers(&block_range_to_gossip).await {*/
-            /*Ok(val) => val,*/
-            /*Err(msg) => {*/
-            /*warn!("Error fetching headers in range: {block_range_to_gossip:?} - {msg:?}. Skipping iteration.");*/
-            /*epoch_index += 1;*/
-            /*continue;*/
-            /*}*/
-            /*};*/
-            //let elapsed = now.elapsed();
-            //println!("Elapsed: {:.2?}", elapsed);
-            //println!("Fetched headers for range: {block_range_to_gossip:?}");
-            break;
-            let full_headers = vec![];
+            let full_headers = match Bridge::get_headers(&block_range_to_gossip).await {
+                Ok(val) => val,
+                Err(msg) => {
+                    warn!("Error fetching headers in range: {block_range_to_gossip:?} - {msg:?}. Skipping iteration.");
+                    epoch_index += 1;
+                    continue;
+                }
+            };
             let mut gossip_batch = GossipBatch::new(
                 block_range_to_gossip.clone(),
                 Some(epoch_index),
@@ -241,15 +147,44 @@ impl Bridge {
             // Sleep for 5 seconds to allow headers to saturate network,
             // since they must be available for body / receipt validation
             sleep(Duration::from_secs(HEADER_SATURATION_DELAY)).await;
-            if let Err(err) = self.serve_bodies(&mut gossip_batch).await {
-                warn!("error gossiping bodies: {err:?}");
-            };
-            if let Err(err) = self.serve_receipts(&mut gossip_batch).await {
-                warn!("error gossiping receipts: {err:?}");
-            };
-            gossip_batch.display_stats();
+            Bridge::serve_gossip_batch(gossip_batch).await;
             epoch_index += 1;
         }
+    }
+
+    async fn serve_gossip_batch(gossip_batch: GossipBatch) {
+        let mut handles = vec![];
+        for header in gossip_batch.full_headers.clone() {
+            let handle = tokio::spawn(async move {
+                let _ = Bridge::serve_body_and_receipt(header).await;
+            });
+            handles.push(handle);
+        }
+        let stream_of_futures = stream::iter(handles);
+        let mut buffered = stream_of_futures.buffer_unordered(10);
+
+        while let Some(fetch) = buffered.next().await {
+            fetch.unwrap();
+        }
+        gossip_batch.display_stats();
+    }
+
+    async fn serve_body_and_receipt(header: FullHeader) -> anyhow::Result<()> {
+        if let Err(msg) = Bridge::spawn_body_task(vec![], header.clone()).await {
+            warn!(
+                "Error serving block body #{:?}: {msg:?}",
+                header.header.number
+            );
+            bail!("fuck");
+        }
+        if let Err(msg) = Bridge::spawn_receipt_task(vec![], header.clone()).await {
+            warn!(
+                "Error serving block receipts #{:?}: {msg:?}",
+                header.header.number
+            );
+            bail!("fuck");
+        }
+        Ok(())
     }
 
     async fn gossip_headers(&self, gossip_batch: &mut GossipBatch) -> anyhow::Result<()> {
@@ -344,39 +279,11 @@ impl Bridge {
             }
         };
         // Gossip epoch acc to network if found locally
-        //let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash });
-        //let content_value = HistoryContentValue::EpochAccumulator(local_epoch_acc.clone());
-        //let _ =
-        //Bridge::gossip_content(self.portal_clients.clone(), content_key, content_value).await;
+        let content_key = HistoryContentKey::EpochAccumulator(EpochAccumulatorKey { epoch_hash });
+        let content_value = HistoryContentValue::EpochAccumulator(local_epoch_acc.clone());
+        let _ =
+            Bridge::gossip_content(self.portal_clients.clone(), content_key, content_value).await;
         Ok(Arc::new(local_epoch_acc))
-    }
-
-    /// Fetch batch of BlockBodies from provider & gossip them to the network
-    /// Spawns the futures in groups of size - BACKFILL_THREAD_COUNT
-    async fn serve_bodies(&self, gossip_batch: &mut GossipBatch) -> anyhow::Result<()> {
-        info!("Serving bodies in range: {:?}", gossip_batch.range);
-        let mut header_index = 0;
-        while header_index < gossip_batch.full_headers.len() {
-            let num_of_tasks = std::cmp::min(
-                BACKFILL_THREAD_COUNT,
-                gossip_batch.full_headers.len() - header_index,
-            );
-            let futures: Vec<JoinHandle<anyhow::Result<()>>> = (0..num_of_tasks)
-                .map(|t| {
-                    Bridge::spawn_body_task(
-                        self.portal_clients.clone(),
-                        gossip_batch.full_headers[header_index + t].clone(),
-                    )
-                })
-                .collect();
-            for future in futures {
-                if let Ok(Ok(_)) = future.await {
-                    gossip_batch.bodies_count += 1;
-                }
-            }
-            header_index += num_of_tasks;
-        }
-        Ok(())
     }
 
     fn spawn_body_task(
@@ -386,34 +293,6 @@ impl Bridge {
         tokio::spawn(async move {
             Bridge::construct_and_gossip_block_body(portal_clients, full_header).await
         })
-    }
-
-    /// Fetch batch of Receipts from provider & gossip them to the network
-    /// Spawns the futures in groups of size - BACKFILL_THREAD_COUNT
-    async fn serve_receipts(&self, gossip_batch: &mut GossipBatch) -> anyhow::Result<()> {
-        info!("Serving receipts in range: {:?}", gossip_batch.range);
-        let mut header_index = 0;
-        while header_index < gossip_batch.full_headers.len() {
-            let num_of_tasks = std::cmp::min(
-                BACKFILL_THREAD_COUNT,
-                gossip_batch.full_headers.len() - header_index,
-            );
-            let futures: Vec<JoinHandle<anyhow::Result<()>>> = (0..num_of_tasks)
-                .map(|t| {
-                    Bridge::spawn_receipt_task(
-                        self.portal_clients.clone(),
-                        gossip_batch.full_headers[header_index + t].clone(),
-                    )
-                })
-                .collect();
-            for future in futures {
-                if let Ok(Ok(_)) = future.await {
-                    gossip_batch.receipts_count += 1;
-                }
-            }
-            header_index += num_of_tasks;
-        }
-        Ok(())
     }
 
     fn spawn_receipt_task(
@@ -571,12 +450,11 @@ impl Bridge {
             let handle = Bridge::get_header_future(range_set);
             handles.push(handle);
         }
-        let finished = futures::future::join_all(handles).await;
-        //let mut results = Vec::with_capacity(result.len());
-        for res in finished {
-            let x = res??;
-            for fh in x {
-                headers.push(fh);
+        let batch_results = futures::future::join_all(handles).await;
+        for result in batch_results {
+            let batch = result??;
+            for full_header in batch {
+                headers.push(full_header);
             }
         }
         Ok(headers)
@@ -648,20 +526,6 @@ async fn get_latest_block_number() -> anyhow::Result<u64> {
     Ok(header.number)
 }
 
-async fn get_block(number: u64) -> anyhow::Result<u64> {
-    let block_number = format!("0x{:01X}", number);
-    let params = Params::Array(vec![json!(block_number), json!(false)]);
-    let method = "eth_getBlockByNumber".to_string();
-    let request = json_request(method, params, 1);
-    let response = pandaops_batch_request(vec![request]).await?;
-    let response: Vec<Value> = serde_json::from_str(&response)?;
-    let result = response[0]
-        .get("result")
-        .ok_or_else(|| anyhow!("Unable to fetch latest block"))?;
-    let header: Header = serde_json::from_value(result.clone())?;
-    Ok(header.number)
-}
-
 /// Used the "surf" library here instead of "ureq" since "surf" is much more capable of handling
 /// multiple async requests. Using "ureq" consistently resulted in errors as soon as the number of
 /// concurrent tasks increased significantly.
@@ -672,6 +536,7 @@ async fn pandaops_batch_request(obj: Vec<JsonRequest>) -> anyhow::Result<String>
         .map_err(|_| anyhow!("PANDAOPS_CLIENT_SECRET env var not set."))?;
 
     let result = surf::post(PANDAOPS_URL)
+        .middleware(Retry::default())
         .body_json(&json!(obj))
         .map_err(|e| anyhow!("Unable to construct json post request: {e:?}"))?
         .header("Content-Type", "application/json".to_string())
@@ -680,6 +545,58 @@ async fn pandaops_batch_request(obj: Vec<JsonRequest>) -> anyhow::Result<String>
         .recv_string()
         .await;
     result.map_err(|_| anyhow!("Unable to request batch from geth"))
+}
+
+#[derive(Debug)]
+pub struct Retry {
+    attempts: u8,
+}
+
+impl Retry {
+    pub fn new(attempts: u8) -> Self {
+        Retry { attempts }
+    }
+}
+
+use surf::{
+    middleware::{Middleware, Next},
+    Client, Request, Response,
+};
+
+#[async_trait::async_trait]
+impl Middleware for Retry {
+    async fn handle(
+        &self,
+        mut req: Request,
+        client: Client,
+        next: Next<'_>,
+    ) -> Result<Response, surf::Error> {
+        let mut retry_count: u8 = 0;
+        let body = req.take_body().into_bytes().await?;
+        while retry_count < self.attempts {
+            let mut new_req = req.clone();
+            let req_body = surf::Body::from_bytes(body.clone());
+            new_req.set_body(req_body);
+            let new_client = client.clone();
+            if let Ok(val) = next.run(new_req, new_client).await {
+                if val.status().is_success() {
+                    return Ok(val);
+                }
+            };
+            retry_count += 1;
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err(surf::Error::from_str(
+            500,
+            "Unable to fetch batch after 3 retries",
+        ))
+    }
+}
+
+impl Default for Retry {
+    fn default() -> Self {
+        Self { attempts: 3 }
+    }
 }
 
 fn json_request(method: String, params: Params, id: u32) -> JsonRequest {
