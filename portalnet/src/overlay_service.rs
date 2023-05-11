@@ -992,7 +992,6 @@ where
                                 return;
                             }
                         };
-
                         match stream.write(&content).await {
                             Ok(..) => {
                                 debug!(
@@ -1107,6 +1106,8 @@ where
         let kbuckets = Arc::clone(&self.kbuckets);
         let command_tx = self.command_tx.clone();
         let utp = Arc::clone(&self.utp_socket);
+        let metrics = Arc::clone(&self.metrics);
+        let protocol = self.protocol.clone();
 
         tokio::spawn(async move {
             // Wait for an incoming connection with the given CID. Then, read the data from the uTP
@@ -1114,16 +1115,21 @@ where
             let mut stream = match utp.accept_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
-                    warn!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
+                    error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
+                    metrics.report_inbound_utp_tx(&protocol, false);
                     return;
                 }
             };
 
             let mut data = vec![];
             if let Err(err) = stream.read_to_eof(&mut data).await {
+                metrics.report_inbound_utp_tx(&protocol, false);
                 error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from uTP stream");
                 return;
             }
+
+            // report utp tx as successful, even if we fail to process the payload
+            metrics.report_inbound_utp_tx(&protocol, true);
 
             if let Err(err) = Self::process_accept_utp_payload(
                 validator,
@@ -1374,10 +1380,14 @@ where
         let response_clone = response.clone();
 
         let utp = Arc::clone(&self.utp_socket);
+        let metrics = Arc::clone(&self.metrics);
+        let protocol = self.protocol.clone();
+
         tokio::spawn(async move {
             let mut stream = match utp.connect_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
+                    metrics.report_outbound_utp_tx(&protocol, false);
                     warn!(
                         %err,
                         cid.send,
@@ -1417,6 +1427,8 @@ where
                         peer = ?cid.peer.client(),
                         "Error decoding previously offered content items"
                     );
+                    // weird since we're reporting failure but its not a utp error
+                    metrics.report_outbound_utp_tx(&protocol, false);
                     return;
                 }
             };
@@ -1425,12 +1437,15 @@ where
                 Ok(payload) => payload,
                 Err(err) => {
                     warn!(%err, "Unable to build content payload");
+                    // weird since we're reporting failure but its not a utp error
+                    metrics.report_outbound_utp_tx(&protocol, false);
                     return;
                 }
             };
 
             // send the content to the acceptor over a uTP stream
             if let Err(err) = stream.write(&content_payload).await {
+                metrics.report_outbound_utp_tx(&protocol, false);
                 warn!(
                     %err,
                     cid.send,
@@ -1438,10 +1453,13 @@ where
                     peer = ?cid.peer.client(),
                     "Error sending content over uTP connection"
                 );
+                // ? or should we still shutdown?
+                return;
             }
 
             // close uTP connection
             if let Err(err) = stream.shutdown() {
+                metrics.report_outbound_utp_tx(&protocol, false);
                 warn!(
                     %err,
                     cid.send,
@@ -1449,7 +1467,9 @@ where
                     peer = ?cid.peer.client(),
                     "Error closing uTP connection"
                 );
+                return;
             };
+            metrics.report_outbound_utp_tx(&protocol, true);
         });
 
         Ok(response)
