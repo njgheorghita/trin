@@ -1116,11 +1116,24 @@ where
         tokio::spawn(async move {
             // Wait for an incoming connection with the given CID. Then, read the data from the uTP
             // stream.
-            let mut stream = match utp.accept_with_cid(cid.clone(), UTP_CONN_CFG).await {
-                Ok(stream) => stream,
-                Err(err) => {
+            let metrics_clone = Arc::clone(&metrics);
+            let protocol_clone = protocol.clone();
+            let cid_clone = cid.clone();
+            let handle = tokio::spawn(async move {
+                match utp.accept_with_cid(cid_clone.clone(), UTP_CONN_CFG).await {
+                    Ok(stream) => Some(stream),
+                    Err(err) => {
+                        metrics_clone.report_inbound_utp_tx(&protocol_clone, false);
+                        error!(%err, cid_clone.send, cid_clone.recv, "unable to accept uTP stream");
+                        None
+                    }
+                }
+            });
+            let mut stream = match handle.await.unwrap() {
+                Some(stream) => stream,
+                None => {
                     metrics.report_inbound_utp_tx(&protocol, false);
-                    error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
+                    error!("error accepting uTP stream");
                     return;
                 }
             };
@@ -1396,17 +1409,30 @@ where
         let protocol = self.protocol.clone();
 
         tokio::spawn(async move {
-            let mut stream = match utp.connect_with_cid(cid.clone(), UTP_CONN_CFG).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    metrics.report_outbound_utp_tx(&protocol, false);
-                    warn!(
-                        %err,
-                        cid.send,
-                        cid.recv,
-                        peer = ?cid.peer.client(),
-                        "Unable to establish uTP conn based on Accept",
-                    );
+            let metrics_clone = Arc::clone(&metrics);
+            let protocol_clone = protocol.clone();
+            let cid_clone = cid.clone();
+            let handle = tokio::spawn(async move {
+                match utp.connect_with_cid(cid_clone.clone(), UTP_CONN_CFG).await {
+                    Ok(stream) => Some(stream),
+                    Err(err) => {
+                        metrics_clone.report_outbound_utp_tx(&protocol_clone, false);
+                        warn!(
+                            %err,
+                            cid_clone.send,
+                            cid_clone.recv,
+                            peer = ?cid_clone.peer.client(),
+                            "Unable to establish uTP conn based on Accept",
+                        );
+                        None
+                    }
+                }
+            });
+            let mut stream = match handle.await.unwrap() {
+                Some(stream) => stream,
+                None => {
+                    metrics.report_inbound_utp_tx(&protocol, false);
+                    error!("error accepting uTP stream");
                     return;
                 }
             };
