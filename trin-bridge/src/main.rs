@@ -29,8 +29,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .args(["--unsafe-private-key", key])
             .args(["--web3-transport", "http"])
             .args(["--web3-http-address", &web3_http_address])
+            .args(["--enable-metrics-with-url", "127.0.0.1:9101"])
             .args(["--discovery-port", &discovery_port])
             .args(["--bootnodes", "default"])
+            // fluffy
+            //.args(["--bootnodes", "enr:-IS4QBvkqZQzoRbHogw3qENHnrTGF0EM9JjuQGb9jVTfiRz6dND2id2xg26XTyF5trk3tQm1yWDFSvDTmj-bWNlM7kQBgmlkgnY0gmlwhH8AAAGJc2VjcDI1NmsxoQMgHv7up-7aBebbCJx20o8672v33CCeKxoKUVfUPSmoUYN1ZHCCIzE"])
+            // trin
+            //.args(["--bootnodes", "enr:-Jy4QE_gOUJXWu8KdxpOZQ4IZSY_wA7EMOuF6da50GZMsh_yUnvxT6YIps0FCBacoKRDgCuz-vUfNgy8u6Sj6Yxikh4BY5Z0IDAuMS4xLWFscGhhLjEtNjAwMzQ1gmlkgnY0gmlwhJB-2SGJc2VjcDI1NmsxoQIsxVsiLZvmBv6YzoB5Tof18yuMcjma2spTducQlecn5oN1ZHCCIyg"])
             .spawn()
             .expect("failed to spawn trin process");
         http_addresses.push(web3_http_address);

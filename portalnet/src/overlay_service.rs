@@ -976,11 +976,14 @@ where
                     // Wait for an incoming connection with the given CID. Then, write the data
                     // over the uTP stream.
                     let utp = Arc::clone(&self.utp_socket);
+                    let metrics = Arc::clone(&self.metrics);
+                    let protocol = self.protocol.clone();
                     tokio::spawn(async move {
                         let mut stream = match utp.accept_with_cid(cid.clone(), UTP_CONN_CFG).await
                         {
                             Ok(stream) => stream,
                             Err(err) => {
+                                metrics.report_outbound_utp_tx(&protocol, false);
                                 error!(
                                     %err,
                                     %cid.send,
@@ -991,9 +994,9 @@ where
                                 return;
                             }
                         };
-
                         match stream.write(&content).await {
                             Ok(..) => {
+                                metrics.report_outbound_utp_tx(&protocol, true);
                                 debug!(
                                     %cid.send,
                                     %cid.recv,
@@ -1003,6 +1006,7 @@ where
                                 );
                             }
                             Err(err) => {
+                                metrics.report_outbound_utp_tx(&protocol, false);
                                 error!(
                                     %cid.send,
                                     %cid.recv,
@@ -1106,6 +1110,8 @@ where
         let kbuckets = Arc::clone(&self.kbuckets);
         let command_tx = self.command_tx.clone();
         let utp = Arc::clone(&self.utp_socket);
+        let metrics = Arc::clone(&self.metrics);
+        let protocol = self.protocol.clone();
 
         tokio::spawn(async move {
             // Wait for an incoming connection with the given CID. Then, read the data from the uTP
@@ -1113,16 +1119,29 @@ where
             let mut stream = match utp.accept_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
-                    warn!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
+                    metrics.report_inbound_utp_tx(&protocol, false);
+                    error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
                     return;
                 }
             };
 
-            let mut data = vec![];
-            if let Err(err) = stream.read_to_eof(&mut data).await {
-                error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from uTP stream");
-                return;
-            }
+            let cid_clone = cid.clone();
+            let handle = tokio::spawn(async move {
+                let mut data = vec![];
+                if let Err(err) = stream.read_to_eof(&mut data).await {
+                    //metrics.report_inbound_utp_tx(&protocol, false);
+                    error!(%err, cid_clone.send, cid_clone.recv, peer = ?cid_clone.peer.client(), "error reading data from uTP stream");
+                    Some(data.clone())
+                } else {
+                    None
+                }
+            });
+            let data = match handle.await.expect("fuck") {
+                Some(val) => val,
+                None => return,
+            };
+            // report utp tx as successful, even if we go on to fail to process the payload
+            metrics.report_inbound_utp_tx(&protocol, true);
 
             if let Err(err) = Self::process_accept_utp_payload(
                 validator,
@@ -1373,10 +1392,14 @@ where
         let response_clone = response.clone();
 
         let utp = Arc::clone(&self.utp_socket);
+        let metrics = Arc::clone(&self.metrics);
+        let protocol = self.protocol.clone();
+
         tokio::spawn(async move {
             let mut stream = match utp.connect_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
+                    metrics.report_outbound_utp_tx(&protocol, false);
                     warn!(
                         %err,
                         cid.send,
@@ -1429,26 +1452,35 @@ where
             };
 
             // send the content to the acceptor over a uTP stream
-            if let Err(err) = stream.write(&content_payload).await {
-                warn!(
-                    %err,
-                    cid.send,
-                    cid.recv,
-                    peer = ?cid.peer.client(),
-                    "Error sending content over uTP connection"
-                );
-            }
-
-            // close uTP connection
-            if let Err(err) = stream.shutdown() {
-                warn!(
-                    %err,
-                    cid.send,
-                    cid.recv,
-                    peer = ?cid.peer.client(),
-                    "Error closing uTP connection"
-                );
-            };
+            let metrics_clone = Arc::clone(&metrics);
+            let protocol_clone = protocol.clone();
+            let handle = tokio::spawn(async move {
+                if let Err(err) = stream.write(&content_payload).await {
+                    metrics_clone.report_outbound_utp_tx(&protocol_clone, false);
+                    warn!(
+                        %err,
+                        cid.send,
+                        cid.recv,
+                        peer = ?cid.peer.client(),
+                        "Error sending content over uTP connection"
+                    );
+                    return;
+                }
+                // close uTP connection
+                if let Err(err) = stream.shutdown() {
+                    metrics_clone.report_outbound_utp_tx(&protocol_clone, false);
+                    warn!(
+                        %err,
+                        cid.send,
+                        cid.recv,
+                        peer = ?cid.peer.client(),
+                        "Error closing uTP connection"
+                    );
+                    return;
+                };
+            });
+            let _ = handle.await;
+            metrics.report_outbound_utp_tx(&protocol, true);
         });
 
         Ok(response)
