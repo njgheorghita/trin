@@ -1,7 +1,8 @@
 use prometheus_exporter::{
     self,
     prometheus::{
-        opts, register_int_counter_vec, register_int_counter_vec_with_registry, IntCounterVec,
+        opts, register_int_counter_vec, register_int_counter_vec_with_registry,
+        register_int_gauge_vec, register_int_gauge_vec_with_registry, IntCounterVec, IntGaugeVec,
         Registry,
     },
 };
@@ -60,6 +61,7 @@ pub enum MessageLabel {
 pub struct OverlayMetrics {
     message_count: IntCounterVec,
     utp_tx_count: IntCounterVec,
+    total_utp_txs: IntGaugeVec,
 }
 
 impl OverlayMetrics {
@@ -102,9 +104,24 @@ impl OverlayMetrics {
                 .expect("a gauge can always be added to a new custom registry, without conflict")
         });
 
+        let total_utp_txs_options = opts!(
+            "trin_total_utp_txs",
+            "count all utp transfers outbound and inbound"
+        );
+        let total_utp_txs_labels: &[&str; 0] = &[];
+        let total_utp_txs = register_int_gauge_vec!(total_utp_txs_options.clone(), total_utp_txs_labels).unwrap_or_else(|_| {
+            error!("Failed to register prometheus total utp tx metrics with default registry, creating new");
+            let custom_registry = Registry::new_custom(None, None)
+                .expect("Prometheus docs don't explain when it might fail to create a custom registry, so... hopefully never");
+            register_int_gauge_vec_with_registry!(total_utp_txs_options, utp_tx_count_labels, custom_registry)
+                .expect("a gauge can always be added to a new custom registry, without conflict")
+
+        });
+
         Self {
             message_count,
             utp_tx_count,
+            total_utp_txs,
         }
     }
 
@@ -174,6 +191,14 @@ impl OverlayMetrics {
 
     pub fn report_inbound_utp_tx(&self, protocol: &ProtocolId, success: bool) {
         self.increment_utp_tx_count(protocol.into(), UtpTxDirectionLabel::Inbound, success);
+    }
+
+    pub fn report_total_utp_tx_inc(&self) {
+        self.total_utp_txs.with_label_values(&[]).inc();
+    }
+
+    pub fn report_total_utp_tx_dec(&self) {
+        self.total_utp_txs.with_label_values(&[]).dec();
     }
 
     fn increment_utp_tx_count(

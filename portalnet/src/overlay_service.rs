@@ -1117,10 +1117,12 @@ where
         tokio::spawn(async move {
             // Wait for an incoming connection with the given CID. Then, read the data from the uTP
             // stream.
+            metrics.report_total_utp_tx_inc();
             let mut stream = match utp.accept_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
                     metrics.report_inbound_utp_tx(&protocol, false);
+                    metrics.report_total_utp_tx_dec();
                     error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
                     return;
                 }
@@ -1129,6 +1131,7 @@ where
             let mut data = vec![];
             if let Err(err) = stream.read_to_eof(&mut data).await {
                 metrics.report_inbound_utp_tx(&protocol, false);
+                metrics.report_total_utp_tx_dec();
                 error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from uTP stream");
                 return;
             }
@@ -1148,6 +1151,7 @@ where
             {
                 error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to process uTP payload");
             }
+            metrics.report_total_utp_tx_dec();
         });
 
         let accept = Accept {
@@ -1389,10 +1393,12 @@ where
         let protocol = self.protocol.clone();
 
         tokio::spawn(async move {
+            metrics.report_total_utp_tx_inc();
             let mut stream = match utp.connect_with_cid(cid.clone(), UTP_CONN_CFG).await {
                 Ok(stream) => stream,
                 Err(err) => {
                     metrics.report_outbound_utp_tx(&protocol, false);
+                    metrics.report_total_utp_tx_dec();
                     warn!(
                         %err,
                         cid.send,
@@ -1432,6 +1438,7 @@ where
                         peer = ?cid.peer.client(),
                         "Error decoding previously offered content items"
                     );
+                    metrics.report_total_utp_tx_dec();
                     return;
                 }
             };
@@ -1440,6 +1447,7 @@ where
                 Ok(payload) => payload,
                 Err(err) => {
                     warn!(%err, "Unable to build content payload");
+                    metrics.report_total_utp_tx_dec();
                     return;
                 }
             };
@@ -1447,6 +1455,7 @@ where
             // send the content to the acceptor over a uTP stream
             if let Err(err) = stream.write(&content_payload).await {
                 metrics.report_outbound_utp_tx(&protocol, false);
+                metrics.report_total_utp_tx_dec();
                 warn!(
                     %err,
                     cid.send,
@@ -1460,6 +1469,7 @@ where
             // close uTP connection
             if let Err(err) = stream.shutdown() {
                 metrics.report_outbound_utp_tx(&protocol, false);
+                metrics.report_total_utp_tx_dec();
                 warn!(
                     %err,
                     cid.send,
@@ -1470,6 +1480,7 @@ where
                 return;
             };
             metrics.report_outbound_utp_tx(&protocol, true);
+            metrics.report_total_utp_tx_dec();
         });
 
         Ok(response)

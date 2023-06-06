@@ -54,7 +54,7 @@ pub struct Bridge {
 const HEADER_SATURATION_DELAY: u64 = 10; // seconds
 const LATEST_BLOCK_POLL_RATE: u64 = 5; // seconds
 const EPOCH_SIZE: u64 = EPOCH_SIZE_USIZE as u64;
-const FUTURES_BUFFER_SIZE: usize = 8;
+const FUTURES_BUFFER_SIZE: usize = 32;
 
 impl Bridge {
     // Devops nodes don't have websockets available, so we can't actually poll the latest block.
