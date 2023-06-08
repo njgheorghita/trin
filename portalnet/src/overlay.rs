@@ -22,7 +22,9 @@ use utp_rs::socket::UtpSocket;
 
 use crate::{
     discovery::{Discovery, UtpEnr},
-    metrics::{MessageDirectionLabel, MessageLabel, OverlayMetrics, ProtocolLabel},
+    metrics::{
+        MessageDirectionLabel, MessageLabel, OverlayMetrics, ProtocolLabel, UtpTxDirectionLabel,
+    },
     overlay_service::{
         OverlayCommand, OverlayRequest, OverlayRequestError, OverlayService, RequestDirection,
         UTP_CONN_CFG,
@@ -686,8 +688,20 @@ where
     }
 
     pub fn get_summary_info(&self) -> String {
+        let utp_inbound_success = self
+            .metrics
+            .utp_tx_count_by_labels(UtpTxDirectionLabel::Inbound, true);
+        let utp_inbound_failure = self
+            .metrics
+            .utp_tx_count_by_labels(UtpTxDirectionLabel::Inbound, false);
+        let utp_outbound_success = self
+            .metrics
+            .utp_tx_count_by_labels(UtpTxDirectionLabel::Outbound, true);
+        let utp_outbound_failure = self
+            .metrics
+            .utp_tx_count_by_labels(UtpTxDirectionLabel::Outbound, false);
         format!(
-            "offers={}/{}, accepts={}/{}",
+            "offers={}/{}, accepts={}/{}, utp inbound={}/{}, utp outbound={}/{}",
             self.metrics.message_count_by_labels(
                 ProtocolLabel::History,
                 MessageDirectionLabel::Received,
@@ -708,6 +722,10 @@ where
                 MessageDirectionLabel::Received,
                 MessageLabel::Offer
             ),
+            utp_inbound_success,
+            utp_inbound_failure + utp_inbound_success,
+            utp_outbound_success,
+            utp_outbound_failure + utp_outbound_success,
         )
     }
 }

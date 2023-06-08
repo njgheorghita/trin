@@ -89,7 +89,7 @@ impl OverlayMetrics {
             "trin_utp_tx_total",
             "count all utp transfers outbound and inbound"
         );
-        let utp_tx_count_labels = &["protocol", "direction", "success"];
+        let utp_tx_count_labels = &["direction", "success"];
 
         // Register the metric with the default registry, or if that fails, register with a
         // newly-created registry.
@@ -127,17 +127,6 @@ impl OverlayMetrics {
 
     /// Returns the value of the given metric with the specified labels.
     pub fn message_count_by_labels(
-        &self,
-        network: ProtocolLabel,
-        direction: MessageDirectionLabel,
-        message_name: MessageLabel,
-    ) -> u64 {
-        let labels = [network.into(), direction.into(), message_name.into()];
-        self.message_count.with_label_values(&labels).get()
-    }
-
-    /// Returns the value of the given metric with the specified labels.
-    pub fn utp_tx_count_by_labels(
         &self,
         network: ProtocolLabel,
         direction: MessageDirectionLabel,
@@ -185,12 +174,12 @@ impl OverlayMetrics {
         self.message_count.with_label_values(&labels).inc();
     }
 
-    pub fn report_outbound_utp_tx(&self, protocol: &ProtocolId, success: bool) {
-        self.increment_utp_tx_count(protocol.into(), UtpTxDirectionLabel::Outbound, success);
+    pub fn report_outbound_utp_tx(&self, success: bool) {
+        self.increment_utp_tx_count(UtpTxDirectionLabel::Outbound, success);
     }
 
-    pub fn report_inbound_utp_tx(&self, protocol: &ProtocolId, success: bool) {
-        self.increment_utp_tx_count(protocol.into(), UtpTxDirectionLabel::Inbound, success);
+    pub fn report_inbound_utp_tx(&self, success: bool) {
+        self.increment_utp_tx_count(UtpTxDirectionLabel::Inbound, success);
     }
 
     pub fn report_total_utp_tx_inc(&self) {
@@ -201,14 +190,16 @@ impl OverlayMetrics {
         self.total_utp_txs.with_label_values(&[]).dec();
     }
 
-    fn increment_utp_tx_count(
-        &self,
-        protocol: ProtocolLabel,
-        direction: UtpTxDirectionLabel,
-        success: bool,
-    ) {
-        let labels: [&str; 3] = [protocol.into(), direction.into(), &success.to_string()];
+    fn increment_utp_tx_count(&self, direction: UtpTxDirectionLabel, success: bool) {
+        let labels: [&str; 2] = [direction.into(), &success.to_string()];
         self.utp_tx_count.with_label_values(&labels).inc();
+    }
+
+    /// Returns the value of the given metric with the specified labels.
+    /// what is this? why do we need it?
+    pub fn utp_tx_count_by_labels(&self, direction: UtpTxDirectionLabel, success: bool) -> u64 {
+        let labels: [&str; 2] = [direction.into(), &success.to_string()];
+        self.utp_tx_count.with_label_values(&labels).get()
     }
 }
 
