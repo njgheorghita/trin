@@ -81,7 +81,7 @@ const BUCKET_REFRESH_INTERVAL_SECS: u64 = 60;
 pub const UTP_CONN_CFG: ConnectionConfig = ConnectionConfig {
     max_packet_size: 1024,
     max_conn_attempts: 3,
-    max_idle_timeout: Duration::from_secs(32),
+    max_idle_timeout: Duration::from_secs(120),
     max_timeout: Duration::from_secs(60),
     initial_timeout: Duration::from_millis(1500),
     min_timeout: Duration::from_millis(500),
@@ -1120,7 +1120,6 @@ where
                 Ok(stream) => stream,
                 Err(err) => {
                     metrics.report_inbound_utp_tx(false);
-                    metrics.report_total_utp_tx_dec();
                     error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to accept uTP stream");
                     return;
                 }
@@ -1129,7 +1128,6 @@ where
             let mut data = vec![];
             if let Err(err) = stream.read_to_eof(&mut data).await {
                 metrics.report_inbound_utp_tx(false);
-                metrics.report_total_utp_tx_dec();
                 error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from uTP stream");
                 return;
             }
@@ -1149,7 +1147,6 @@ where
             {
                 error!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to process uTP payload");
             }
-            metrics.report_total_utp_tx_dec();
         });
 
         let accept = Accept {
@@ -1396,12 +1393,11 @@ where
                 Ok(stream) => stream,
                 Err(err) => {
                     metrics.report_outbound_utp_tx(false);
-                    metrics.report_total_utp_tx_dec();
                     warn!(
                         %err,
                         cid.send,
                         cid.recv,
-                        peer = ?cid.peer.client(),
+                        peer = ?cid.peer,
                         "Unable to establish uTP conn based on Accept",
                     );
                     return;
@@ -1436,7 +1432,6 @@ where
                         peer = ?cid.peer.client(),
                         "Error decoding previously offered content items"
                     );
-                    metrics.report_total_utp_tx_dec();
                     return;
                 }
             };
@@ -1445,7 +1440,6 @@ where
                 Ok(payload) => payload,
                 Err(err) => {
                     warn!(%err, "Unable to build content payload");
-                    metrics.report_total_utp_tx_dec();
                     return;
                 }
             };
@@ -1453,7 +1447,6 @@ where
             // send the content to the acceptor over a uTP stream
             if let Err(err) = stream.write(&content_payload).await {
                 metrics.report_outbound_utp_tx(false);
-                metrics.report_total_utp_tx_dec();
                 warn!(
                     %err,
                     cid.send,
@@ -1467,7 +1460,6 @@ where
             // close uTP connection
             if let Err(err) = stream.shutdown() {
                 metrics.report_outbound_utp_tx(false);
-                metrics.report_total_utp_tx_dec();
                 warn!(
                     %err,
                     cid.send,
@@ -1478,7 +1470,6 @@ where
                 return;
             };
             metrics.report_outbound_utp_tx(true);
-            metrics.report_total_utp_tx_dec();
         });
 
         Ok(response)

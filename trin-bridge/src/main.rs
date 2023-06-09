@@ -19,8 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut handles = vec![];
     let mut http_addresses = vec![];
     for (i, key) in private_keys.iter().enumerate() {
-        let web3_http_address = format!("http://127.0.0.1:{}", 8545 + i);
-        let discovery_port = format!("{}", 9000 + i);
+        let web3_http_address = format!("http://127.0.0.1:{}", 8545);
+        let discovery_port = format!("{}", 9010 + i);
         let handle = Command::new(bridge_config.executable_path.clone())
             .kill_on_drop(true)
             .args(["--mb", "0"])
@@ -28,8 +28,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .args(["--web3-transport", "http"])
             .args(["--web3-http-address", &web3_http_address])
             .args(["--enable-metrics-with-url", "127.0.0.1:9101"])
+            //.args(["--external-address", "127.0.0.1:9010"])
             .args(["--discovery-port", &discovery_port])
-            .args(["--bootnodes", "default"])
+            //.args(["--bootnodes", "default"])
+            .args(["--bootnodes", "enr:-IS4QNg-qujO9po5JO0LcAGmlE7gEZC3AUu19EYK81QxiFM-e-Zp4QCbD5ktZfuRejiQBP6qCh4EBD88ntPnWwzmEgABgmlkgnY0gmlwhJB-2SGJc2VjcDI1NmsxoQKYklPWO1RCe7mlJUk93IPsiFAdJVQDsq1FUdpBwL8kfoN1ZHCCIzE"])
+            // fluffy
+            //.args(["--bootstrap-node:enr:-Jy4QLq8jYrGQHOsS5aCbMzGOsPgBCw2wzzSUhR12FXjU6c-ewawwWHvC1qO677KgQHrN8lOjMLeaid6Aw-QTyp-M74BY5Z0IDAuMS4xLWFscGhhLjEtNjAwMzQ1gmlkgnY0gmlwhJB-2SGJc2VjcDI1NmsxoQIsxVsiLZvmBv6YzoB5Tof18yuMcjma2spTducQlecn5oN1ZHCCIyg"])
+            //.args(["--table-ip-limit:1024"])
+            //.args(["--bucket-ip-limit:24"])
+            //.args(["--nat:extip:127.0.0.1"])
+            //.args(["--rpc"])
             .spawn()
             .expect("failed to spawn trin process");
         http_addresses.push(web3_http_address);

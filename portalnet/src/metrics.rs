@@ -176,10 +176,12 @@ impl OverlayMetrics {
 
     pub fn report_outbound_utp_tx(&self, success: bool) {
         self.increment_utp_tx_count(UtpTxDirectionLabel::Outbound, success);
+        self.report_total_utp_tx_dec();
     }
 
     pub fn report_inbound_utp_tx(&self, success: bool) {
         self.increment_utp_tx_count(UtpTxDirectionLabel::Inbound, success);
+        self.report_total_utp_tx_dec();
     }
 
     pub fn report_total_utp_tx_inc(&self) {
