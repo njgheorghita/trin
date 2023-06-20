@@ -32,8 +32,17 @@ impl GrafanaAPI {
     ) -> Result<String, anyhow::Error> {
         let datasource_api_url = format!("{}/{}", self.address, "api/datasources/");
 
-        // If this fails with a 409 error, it's because the datasource already exists.
-        // Delete it and try again.
+        // Delete the datasource if one by the same name already exists
+        let datasource_get_url = format!("{}{}{}", datasource_api_url, "name/", name);
+        if let Ok(_) = ureq::get(&datasource_get_url)
+            .set("Authorization", &self.basic_auth_string)
+            .call()
+        {
+            ureq::delete(&datasource_get_url)
+                .set("Authorization", &self.basic_auth_string)
+                .call()?;
+        }
+
         let datasource_creation_response = ureq::post(&datasource_api_url)
             .set("Authorization", &self.basic_auth_string)
             .send_json(ureq::json!({
@@ -44,6 +53,7 @@ impl GrafanaAPI {
                 "basicAuth": false,
             }))?;
 
+        println!("y: {:?}", datasource_creation_response);
         let response: DatasourceCreationResponse = datasource_creation_response.into_json()?;
         Ok(response.datasource.uid)
     }
@@ -58,12 +68,21 @@ impl GrafanaAPI {
         let dashboard_json: serde_json::Value = serde_json::from_str(&filled_in_template[..])?;
 
         let dashboard_api_url = format!("{}/{}", self.address, "api/dashboards/db/");
-        let dashboard_creation_response: DashboardCreationResponse = ureq::post(&dashboard_api_url)
+        println!("yy");
+        use ureq::OrAnyStatus;
+        /*        let req = ureq::post(&dashboard_api_url)*/
+        /*.set("Authorization", &self.basic_auth_string)*/
+        /*.send_json(ureq::json!({ "dashboard": dashboard_json }))*/
+        /*.or_any_status()?;*/
+
+        //println!("XXX: {:?}", req.into_string());
+        let req = ureq::post(&dashboard_api_url)
             .set("Authorization", &self.basic_auth_string)
-            .send_json(ureq::json!({ "dashboard": dashboard_json }))?
-            .into_json()?;
+            .send_json(ureq::json!({ "dashboard": dashboard_json }))?;
+        let dashboard_creation_response: DashboardCreationResponse = req.into_json()?;
 
         let full_dashboard_url = format!("{}{}", self.address, dashboard_creation_response.url);
+        //let full_dashboard_url = format!("{}{}", self.address, "x");
         Ok(full_dashboard_url)
     }
 
