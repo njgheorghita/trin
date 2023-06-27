@@ -7192,6 +7192,7 @@ dependencies = [
  "tracing-subscriber",
  "trin-utils",
  "trin-validation",
+ "url",
 ]
 
 [[package]]
