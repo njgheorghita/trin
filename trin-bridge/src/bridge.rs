@@ -216,7 +216,8 @@ impl Bridge {
         sleep(Duration::from_secs(HEADER_SATURATION_DELAY)).await;
         Bridge::construct_and_gossip_block_body(&full_header, &portal_clients, &gossip_stats)
             .await?;
-        Bridge::construct_and_gossip_receipt(&full_header, &portal_clients, &gossip_stats).await
+        //Bridge::construct_and_gossip_receipt(&full_header, &portal_clients, &gossip_stats).await?;
+        Ok(())
     }
 
     async fn gossip_header(

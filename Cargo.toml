@@ -15,7 +15,8 @@ description = "A Rust implementation of the Ethereum Portal Network"
 [dependencies]
 anyhow = "1.0.68"
 clap = { version = "4.2.1", features = ["derive"] }
-discv5 = { version = "0.3.0", features = ["serde"] }
+#discv5 = { version = "0.3.0", features = ["serde"] }
+discv5 = { path = "../discv5", features = ["serde"] }
 eth2_ssz = "0.4.0"
 ethereum-types = "0.12.1"
 ethportal-api = { path = "ethportal-api" }
@@ -38,7 +39,7 @@ trin-history = { path = "trin-history" }
 trin-state = { path = "trin-state" }
 trin-utils = { path = "trin-utils" }
 trin-validation = { path = "trin-validation" }
-utp-rs = "0.1.0-alpha.5"
+utp-rs = { version = "0.1.0-alpha.5" }
 
 [dev-dependencies]
 ethportal-peertest = { path = "ethportal-peertest" }

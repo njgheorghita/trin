@@ -1640,8 +1640,6 @@ checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
 [[package]]
 name = "discv5"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77f32d27968ba86689e3f0eccba0383414348a6fc5918b0a639c98dd81e20ed6"
 dependencies = [
  "aes 0.7.5",
  "aes-gcm 0.9.4",

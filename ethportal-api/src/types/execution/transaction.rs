@@ -214,6 +214,7 @@ struct EIP1559TransactionHelper {
     pub value: U256,
     #[serde(rename(deserialize = "input"))]
     pub data: JsonBytes,
+    #[serde(default)]
     pub access_list: Vec<AccessListItem>,
     #[serde(rename(deserialize = "v"))]
     pub y_parity: U64,

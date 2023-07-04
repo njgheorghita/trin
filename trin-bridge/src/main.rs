@@ -28,7 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .args(["--web3-transport", "http"])
             .args(["--web3-http-address", &web3_http_address])
             .args(["--discovery-port", &discovery_port])
-            .args(["--bootnodes", "default"])
+            .args(["--bootnodes", "enr:-Jy4QNblFqaZ0lvdrmTTXRRD7K3WcGT1j1DMDNVt9qMd1JLdM8LtT6LqQsP9FWLH2rZLCW-NuVN25g2s6HaRde3ssJ8BY5Z0IDAuMS4xLWFscGhhLjEtNjAwMzQ1gmlkgnY0gmlwhJB-2SGJc2VjcDI1NmsxoQIsxVsiLZvmBv6YzoB5Tof18yuMcjma2spTducQlecn5oN1ZHCCIyg"])
+            .args(["--enable-metrics-with-url", "127.0.0.1:9101"])
+            //.args(["--external-address", &format!("127.0.0.1:{}", discovery_port)])
             .spawn()
             .expect("failed to spawn trin process");
         http_addresses.push(web3_http_address);
