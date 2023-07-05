@@ -1,3 +1,4 @@
+use crate::mode::{BridgeMode, ModeType};
 use crate::types::NetworkKind;
 use anyhow::bail;
 use clap::{Parser, Subcommand};
@@ -65,63 +66,7 @@ fn check_node_count(val: &str) -> Result<u8, String> {
     }
 }
 
-/// Used to help decode cli args identifying the desired bridge mode.
-/// - Latest: tracks the latest header
-/// - Backfill: starts at block 0
-/// - StartFromEpoch: starts at the given epoch
-///   - ex: "e123" starts at epoch 123
-/// - Single: executes a single block
-///   - ex: "b123" executes block 123
-#[derive(Clone, Debug, PartialEq, Default, Eq)]
-pub enum BridgeMode {
-    #[default]
-    Latest,
-    Backfill(ModeType),
-    Single(ModeType),
-    Test(PathBuf),
-}
-// latest - none
-// start-epoch - u64
-// --mode start:e134
-// --mode single:b0
-// --mode test:file_path
-// --mode latest
-// start-block - u64
-// single-epoch - u64
-// single-block - u64
-// test - file path
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ModeType {
-    Epoch(u64),
-    Block(u64),
-}
-
 type ParseError = &'static str;
-
-impl FromStr for BridgeMode {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "latest" => Ok(BridgeMode::Latest),
-            val => match &val[..1] {
-                "e" => {
-                    let epoch = val[1..]
-                        .parse()
-                        .map_err(|_| "Invalid bridge mode arg: epoch number")?;
-                    Ok(BridgeMode::Backfill(ModeType::Epoch(epoch)))
-                }
-                "b" => {
-                    let block = val[1..]
-                        .parse()
-                        .map_err(|_| "Invalid bridge mode arg: block number")?;
-                    Ok(BridgeMode::Single(ModeType::Block(block)))
-                }
-                _ => Err("Invalid bridge mode arg: type prefix"),
-            },
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Subcommand)]
 pub enum ClientType {
@@ -221,7 +166,6 @@ fn trin_handle(
 #[cfg(test)]
 mod test {
     use super::*;
-    use rstest::rstest;
 
     #[test]
     fn test_default_bridge_config() {
@@ -331,24 +275,5 @@ mod test {
             "path/to/epoch/accumulator",
         ])
         .unwrap();
-    }
-
-    #[rstest]
-    #[case("latest", BridgeMode::Latest)]
-    fn test_mode_flag(#[case] actual: String, #[case] expected: BridgeMode) {
-        const EXECUTABLE_PATH: &str = "path/to/executable";
-        const EPOCH_ACC_PATH: &str = "path/to/epoch/accumulator";
-        let bridge_config = BridgeConfig::parse_from([
-            "bridge",
-            "--node-count",
-            "1",
-            "--executable-path",
-            EXECUTABLE_PATH,
-            "--epoch-accumulator-path",
-            EPOCH_ACC_PATH,
-            "--mode",
-            &actual,
-        ]);
-        assert_eq!(bridge_config.mode, expected);
     }
 }

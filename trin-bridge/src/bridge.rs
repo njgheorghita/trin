@@ -1,5 +1,5 @@
-use crate::cli::BridgeMode;
 use crate::full_header::FullHeader;
+use crate::mode::{BridgeMode, ModeType};
 use crate::pandaops::PandaOpsMiddleware;
 use anyhow::{anyhow, bail};
 use ethportal_api::jsonrpsee::http_client::HttpClient;
@@ -67,39 +67,7 @@ impl Bridge {
 }
 
 impl Bridge {
-    pub async fn launch_single(&self, block_number: u64) {
-        let gossip_range = Range {
-            start: block_number,
-            end: block_number + 1,
-        };
-        let epoch_acc = if block_number <= MERGE_BLOCK_NUMBER {
-            let epoch_index = block_number / EPOCH_SIZE;
-            match self.get_epoch_acc(epoch_index).await {
-                Ok(val) => Some(val),
-                Err(msg) => {
-                    warn!("Unable to find epoch acc for block number: {block_number:?}. Skipping gossip: {msg:?}");
-                    return;
-                }
-            }
-        } else {
-            None
-        };
-
-        info!("Gossiping block: {block_number:?}");
-        let gossip_stats = Arc::new(Mutex::new(GossipStats::new(gossip_range.clone())));
-        match self
-            .serve_full_block(
-                block_number,
-                epoch_acc,
-                gossip_stats,
-                self.portal_clients.clone(),
-            )
-            .await
-        {
-            Ok(_) => info!("Successfully served block: {block_number:?}"),
-            Err(msg) => warn!("Error serving block: {block_number:?}: {msg:?}"),
-        }
-    }
+    pub async fn launch_test(&self, test_path: PathBuf) {}
 
     // Devops nodes don't have websockets available, so we can't actually poll the latest block.
     // Instead we loop on a short interval and fetch the latest blocks not yet served.
@@ -144,32 +112,46 @@ impl Bridge {
         }
     }
 
-    pub async fn launch_backfill(&self, starting_epoch: Option<u64>) {
+    pub async fn launch_backfill(&self, start_value: BridgeMode) {
         let latest_block = self.pandaops.get_latest_block_number().await.expect(
             "Error launching bridge in backfill mode. Unable to get latest block from provider.",
         );
-        let mut epoch_index = match starting_epoch {
-            Some(val) => {
-                if val * EPOCH_SIZE > latest_block {
-                    panic!(
-                        "Starting epoch is greater than current epoch. 
-                        Please specify a starting epoch that begins before the current block."
-                    );
-                }
-                val
-            }
-            None => 0,
+        let (looped, start_value) = match start_value {
+            BridgeMode::Backfill(val) => (true, val),
+            BridgeMode::Single(val) => (false, val),
+            _ => panic!("fuck"),
         };
+        let (mut start_block, mut end_block, mut epoch_index) = match start_value {
+            ModeType::Epoch(val) => match looped {
+                // this doesn't really matter for epochs since in single mode we still gossip the
+                // entire block range...
+                true => (val * EPOCH_SIZE, ((val + 1) * EPOCH_SIZE), val),
+                false => (val * EPOCH_SIZE, ((val + 1) * EPOCH_SIZE), val),
+            },
+            ModeType::Block(val) => match looped {
+                true => {
+                    let epoch_index = val / EPOCH_SIZE;
+                    (val, ((epoch_index + 1) * EPOCH_SIZE), epoch_index)
+                }
+                false => (val, val + 1, val / EPOCH_SIZE),
+            },
+        };
+        if start_block > latest_block {
+            panic!(
+                "Starting block/epoch is greater than latest block. 
+                        Please specify a starting block/epoch that begins before the current block."
+            );
+        }
         let current_epoch = latest_block / EPOCH_SIZE;
+        let mut gossip_range = Range {
+            start: start_block,
+            end: end_block,
+        };
         while epoch_index < current_epoch {
-            let start = epoch_index * EPOCH_SIZE;
-            let end = start + EPOCH_SIZE;
-            let gossip_range = Range { start, end };
-
             // Using epoch_size chunks & epoch boundaries ensures that every
             // "chunk" shares an epoch accumulator avoiding the need to
             // look up the epoch acc on a header by header basis
-            let epoch_acc = if end <= MERGE_BLOCK_NUMBER {
+            let epoch_acc = if gossip_range.end <= MERGE_BLOCK_NUMBER {
                 match self.get_epoch_acc(epoch_index).await {
                     Ok(val) => Some(val),
                     Err(msg) => {
@@ -204,7 +186,16 @@ impl Bridge {
             } else {
                 warn!("Error displaying gossip stats. Unable to acquire lock.");
             }
+            if !looped {
+                break;
+            }
             epoch_index += 1;
+            start_block = epoch_index * EPOCH_SIZE;
+            end_block = start_block + EPOCH_SIZE;
+            gossip_range = Range {
+                start: start_block,
+                end: end_block,
+            };
         }
     }
 
