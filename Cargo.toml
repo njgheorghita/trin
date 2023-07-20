@@ -15,7 +15,7 @@ description = "A Rust implementation of the Ethereum Portal Network"
 [dependencies]
 anyhow = "1.0.68"
 clap = { version = "4.2.1", features = ["derive"] }
-discv5 = { version = "0.3.0", features = ["serde"], git = "https://github.com/njgheorghita/discv5.git", rev = "9cc6c79748b3c8ef43b0c9ef457848894a209fb3"}
+discv5 = { version = "0.3.0", features = ["serde"], git = "https://github.com/njgheorghita/discv5.git", rev = "fd97a5e92e71176455343af6ec1ca34ba2d5e0c3"}
 eth2_ssz = "0.4.0"
 ethereum-types = "0.12.1"
 ethportal-api = { path = "ethportal-api" }
