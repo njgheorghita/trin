@@ -1640,7 +1640,7 @@ checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
 [[package]]
 name = "discv5"
 version = "0.3.0"
-source = "git+https://github.com/njgheorghita/discv5.git?rev=fd97a5e92e71176455343af6ec1ca34ba2d5e0c3#fd97a5e92e71176455343af6ec1ca34ba2d5e0c3"
+source = "git+https://github.com/njgheorghita/discv5.git?rev=df2d477#df2d477159691e4436bcd1b288c7b9cd555db872"
 dependencies = [
  "aes 0.7.5",
  "aes-gcm 0.9.4",
