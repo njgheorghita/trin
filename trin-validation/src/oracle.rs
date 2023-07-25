@@ -1,15 +1,15 @@
 use anyhow::anyhow;
 use ethereum_types::H256;
 use serde_json::Value;
-use ssz::Decode;
 use tokio::sync::mpsc;
 
 use crate::accumulator::MasterAccumulator;
 use ethportal_api::types::content_key::{BlockHeaderKey, HistoryContentKey};
+use ethportal_api::types::content_value::HistoryContentValue;
 use ethportal_api::types::execution::header::HeaderWithProof;
 use ethportal_api::types::jsonrpc::endpoints::HistoryEndpoint;
 use ethportal_api::types::jsonrpc::request::{BeaconJsonRpcRequest, HistoryJsonRpcRequest};
-use ethportal_api::utils::bytes::hex_decode;
+use ethportal_api::types::portal::ContentInfo;
 
 /// Responsible for dispatching cross-overlay-network requests
 /// for data to perform validation.
@@ -57,12 +57,16 @@ impl HeaderOracle {
             }
             None => return Err(anyhow!("No response from chain history subnetwork")),
         };
-        let hwp_ssz = hwp_ssz
-            .as_str()
-            .ok_or_else(|| anyhow!("Invalid HWP format."))?;
-        let hwp_ssz = hex_decode(hwp_ssz)?;
-        HeaderWithProof::from_ssz_bytes(&hwp_ssz)
-            .map_err(|err| anyhow!("Invalid HWP received from chain history network: {err:?}"))
+        let hwp: ContentInfo = serde_json::from_value(hwp_ssz).unwrap();
+        let hwp = match hwp {
+            ContentInfo::Content { content, .. } => content,
+            _ => return Err(anyhow!("Invalid HWP received from chain history network")),
+        };
+        if let HistoryContentValue::BlockHeaderWithProof(hwp) = hwp {
+            Ok(hwp)
+        } else {
+            Err(anyhow!("Invalid HWP received from chain history network"))
+        }
     }
 
     pub fn history_jsonrpc_tx(

@@ -23,12 +23,13 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, warn};
 use utp_rs::socket::UtpSocket;
 
+use crate::events::EventEnvelope;
 use crate::{
     discovery::{Discovery, UtpEnr},
+    find::query_info::FindContentResult,
     metrics::overlay::OverlayMetrics,
     overlay_service::{
         OverlayCommand, OverlayRequest, OverlayRequestError, OverlayService, RequestDirection,
-        UTP_CONN_CFG,
     },
     storage::ContentStore,
     types::{
@@ -46,9 +47,6 @@ use ethportal_api::types::enr::Enr;
 use ethportal_api::utils::bytes::hex_encode;
 use ethportal_api::OverlayContentKey;
 use trin_validation::validator::Validator;
-
-use crate::events::EventEnvelope;
-use ethportal_api::types::query_trace::QueryTrace;
 
 /// Configuration parameters for the overlay network.
 #[derive(Clone)]
@@ -102,8 +100,6 @@ pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
     protocol: ProtocolId,
     /// A sender to send commands to the OverlayService.
     pub command_tx: UnboundedSender<OverlayCommand<TContentKey>>,
-    /// uTP socket.
-    utp_socket: Arc<UtpSocket<UtpEnr>>,
     /// Declare the allowed content key types for a given overlay network.
     /// Use a phantom, because we don't store any keys in this struct.
     /// For example, this type is used when decoding a content key received over the network.
@@ -111,7 +107,7 @@ pub struct OverlayProtocol<TContentKey, TMetric, TValidator, TStore> {
     /// Associate a distance metric with the overlay network.
     phantom_metric: PhantomData<TMetric>,
     /// Accepted content validator that makes requests to this/other overlay networks
-    validator: Arc<TValidator>,
+    phantom_validator: PhantomData<TValidator>,
     /// Runtime telemetry metrics for the overlay network.
     metrics: Arc<OverlayMetrics>,
 }
@@ -168,10 +164,9 @@ where
             store,
             protocol,
             command_tx,
-            utp_socket,
             phantom_content_key: PhantomData,
             phantom_metric: PhantomData,
-            validator,
+            phantom_validator: PhantomData,
             metrics,
         }
     }
@@ -425,7 +420,7 @@ where
         &self,
         enr: Enr,
         content_key: Vec<u8>,
-    ) -> Result<Content, OverlayRequestError> {
+    ) -> Result<serde_json::Value, OverlayRequestError> {
         // Construct the request.
         let request = FindContent {
             content_key: content_key.clone(),
@@ -441,59 +436,15 @@ where
         {
             Ok(Response::Content(found_content)) => {
                 match found_content {
-                    Content::Content(_) => Ok(found_content),
-                    Content::Enrs(_) => Ok(found_content),
-                    // Init uTP stream if `connection_id`is received
-                    Content::ConnectionId(conn_id) => {
-                        let conn_id = u16::from_be(conn_id);
-                        let content = self.init_find_content_stream(enr, conn_id).await?;
-                        let content_key = TContentKey::try_from(content_key).map_err(|err| {
-                            OverlayRequestError::FailedValidation(format!(
-                                "Error decoding content key for received utp content: {err}"
-                            ))
-                        })?;
-                        match self
-                            .validator
-                            .validate_content(&content_key, &content)
-                            .await
-                        {
-                            Ok(_) => Ok(Content::Content(content)),
-                            Err(msg) => Err(OverlayRequestError::FailedValidation(format!(
-                                "Network: {:?}, Reason: {:?}",
-                                self.protocol, msg
-                            ))),
-                        }
-                    }
+                    Content::Content(_) => Ok(found_content.try_into().unwrap()),
+                    Content::Enrs(val) => Ok(serde_json::json!({ "enrs": val })),
+                    // all utp should be handled within service
+                    Content::ConnectionId(_) => panic!("invalid state"),
                 }
             }
             Ok(_) => Err(OverlayRequestError::InvalidResponse),
             Err(error) => Err(error),
         }
-    }
-
-    /// Initialize FindContent uTP stream with remote node
-    async fn init_find_content_stream(
-        &self,
-        enr: Enr,
-        conn_id: u16,
-    ) -> Result<Vec<u8>, OverlayRequestError> {
-        let cid = utp_rs::cid::ConnectionId {
-            recv: conn_id,
-            send: conn_id.wrapping_add(1),
-            peer: crate::discovery::UtpEnr(enr),
-        };
-        let mut stream = self
-            .utp_socket
-            .connect_with_cid(cid, UTP_CONN_CFG)
-            .await
-            .map_err(|err| OverlayRequestError::UtpError(format!("{err:?}")))?;
-        let mut data = vec![];
-        stream
-            .read_to_eof(&mut data)
-            .await
-            .map_err(|err| OverlayRequestError::UtpError(format!("{:?}", err)))?;
-
-        Ok(data)
     }
 
     /// Offer is sent in order to store content to k nodes with radii that contain content-id
@@ -546,6 +497,7 @@ where
         }
     }
 
+    /// this is the problem.
     pub async fn lookup_node(&self, target: NodeId) -> Vec<Enr> {
         if target == self.local_enr().node_id() {
             return vec![self.local_enr()];
@@ -591,13 +543,8 @@ where
         })
     }
 
-    /// Performs a content lookup for `target`.
-    /// Returns the target content along with the peers traversed during content lookup.
-    pub async fn lookup_content(
-        &self,
-        target: TContentKey,
-        is_trace: bool,
-    ) -> (Option<Vec<u8>>, Option<QueryTrace>) {
+    /// and this.
+    pub async fn lookup_content(&self, target: TContentKey, is_trace: bool) -> FindContentResult {
         let (tx, rx) = oneshot::channel();
         let content_id = target.content_id();
 
@@ -612,7 +559,7 @@ where
                 content.id = %hex_encode(content_id),
                 "Error submitting FindContent query to service"
             );
-            return (None, None);
+            return (None, false, None);
         }
 
         rx.await.unwrap_or_else(|err| {
@@ -622,7 +569,7 @@ where
                 content.id = %hex_encode(content_id),
                 "Error receiving content from service",
             );
-            (None, None)
+            (None, false, None)
         })
     }
 

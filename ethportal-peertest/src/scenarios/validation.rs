@@ -47,8 +47,14 @@ pub async fn test_validate_pre_merge_header_with_proof(peertest: &Peertest, targ
         .unwrap();
 
     match result {
-        ContentInfo::Content { content } => assert_eq!(content, header_with_proof_content_value),
-        _ => panic!("Content value's should match"),
+        ContentInfo::Content {
+            content,
+            utp_transfer,
+        } => {
+            assert_eq!(content, header_with_proof_content_value);
+            assert!(!utp_transfer);
+        }
+        _ => panic!("Content values should match"),
     }
 }
 
@@ -82,8 +88,14 @@ pub async fn test_validate_pre_merge_block_body(peertest: &Peertest, target: &Cl
         .unwrap();
 
     match result {
-        ContentInfo::Content { content } => assert_eq!(content, block_body_content_value),
-        _ => panic!("Content value's should match"),
+        ContentInfo::Content {
+            content,
+            utp_transfer,
+        } => {
+            assert_eq!(content, block_body_content_value);
+            assert!(utp_transfer);
+        }
+        _ => panic!("Content values should match"),
     }
 }
 
@@ -114,7 +126,13 @@ pub async fn test_validate_pre_merge_receipts(peertest: &Peertest, target: &Clie
         .unwrap();
 
     match result {
-        ContentInfo::Content { content } => assert_eq!(content, receipts_content_value),
-        _ => panic!("Content value's should match"),
+        ContentInfo::Content {
+            content,
+            utp_transfer,
+        } => {
+            assert_eq!(content, receipts_content_value);
+            assert!(utp_transfer);
+        }
+        _ => panic!("Content values should match"),
     }
 }
