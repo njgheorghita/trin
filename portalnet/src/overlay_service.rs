@@ -994,6 +994,9 @@ where
                     },
                 );
                 self.metrics.report_outbound_request(&request.request);
+                if destination.node_id() == self.discovery.local_enr().node_id() {
+                    panic!("fuck");
+                }
                 self.send_talk_req(request.request, request.id, destination);
             }
         }
@@ -1058,7 +1061,14 @@ where
         );
 
         let distances64: Vec<u64> = request.distances.iter().map(|x| (*x).into()).collect();
-        let mut enrs = self.nodes_by_distance(distances64);
+        let mut enrs = self
+            .nodes_by_distance(distances64)
+            .into_iter()
+            .filter(|enr| {
+                // Filter out the source node.
+                &enr.node_id() != source
+            })
+            .collect();
 
         // Limit the ENRs so that their summed sizes do not surpass the max TALKREQ packet size.
         pop_while_ssz_bytes_len_gt(&mut enrs, MAX_PORTAL_NODES_ENRS_SIZE);
@@ -1351,6 +1361,7 @@ where
                     enr: node_addr.enr,
                     data_radius: Distance::MAX,
                 };
+                println!("registering node activity");
                 self.connect_node(node, ConnectionDirection::Incoming);
             }
         }
@@ -1441,6 +1452,7 @@ where
         // TODO: In what situation would a disconnected node respond to a request from the local
         // node? Handling this case might not be necessary, or it should be handled in a different
         // way.
+        println!("processing response");
         match status.state {
             ConnectionState::Disconnected => self.connect_node(node, status.direction),
             ConnectionState::Connected => {
@@ -2177,10 +2189,12 @@ where
             InsertResult::ValueUpdated | InsertResult::UpdatedPending => {}
             InsertResult::Failed(reason) => {
                 self.peers_to_ping.remove(&node_id);
+                let local_node_id = self.local_enr().node_id();
                 debug!(
                     protocol = %self.protocol,
                     peer = %node_id,
                     error = ?reason,
+                    selfid = %local_node_id,
                     "Error inserting/updating node into routing table",
                 );
             }

@@ -64,7 +64,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn peertest_find_content_return_enr() {
+    async fn peertestx_find_content_return_enr() {
         let (peertest, target, handle) = setup_peertest().await;
         peertest::scenarios::find::test_find_content_return_enr(&target, &peertest).await;
         peertest.exit_all_nodes();
@@ -162,6 +162,7 @@ mod test {
         let subscriber = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_ansi(trin_utils::log::detect_ansi_support())
+            .with_thread_ids(true)
             .finish();
         // returns err if already set, which is fine and we just ignore the err
         let _ = tracing::subscriber::set_global_default(subscriber);
@@ -254,7 +255,7 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn peertest_history_bridge() {
+    async fn peertestx_history_bridge() {
         let (peertest, target, handle) = setup_peertest_bridge().await;
         peertest::scenarios::bridge::test_history_bridge(&peertest, &target).await;
         peertest.exit_all_nodes();
@@ -263,9 +264,32 @@ mod test {
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
-    async fn peertest_beacon_bridge() {
+    async fn peertestx_beacon_bridge() {
         let (peertest, target, handle) = setup_peertest_bridge().await;
         peertest::scenarios::bridge::test_beacon_bridge(&peertest, &target).await;
+        peertest.exit_all_nodes();
+        handle.stop().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn peertestx_discv5() {
+        // setup_peertest(2 nodes)
+        let (peertest, target, handle) = setup_peertest().await;
+        match ethportal_api::HistoryNetworkApiClient::get_enr(
+            &peertest.bootnode.ipc_client,
+            peertest.nodes[0].enr.node_id(),
+        )
+        .await
+        {
+            Ok(response) => {
+                if response != peertest.nodes[0].enr.clone() {
+                    panic!("Response from GetEnr didn't return expected Enr");
+                }
+            }
+            Err(err) => panic!("{}", &err.to_string()),
+        }
+        //peertest::scenarios::bridge::test_beacon_bridge(&peertest, &target).await;
         peertest.exit_all_nodes();
         handle.stop().unwrap();
     }
