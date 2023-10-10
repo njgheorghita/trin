@@ -445,10 +445,25 @@ impl Bridge {
         content_key: HistoryContentKey,
         content_value: HistoryContentValue,
     ) -> anyhow::Result<()> {
+        info!("xxx gossipping");
         for client in portal_clients {
-            client
+            match client
                 .gossip(content_key.clone(), content_value.clone())
-                .await?;
+                .await
+            {
+                Ok(val) => {
+                    info!("xxx Content key: {:?}", content_key);
+                    info!(
+                        "xxx Gossip result: offered - {:?}, accepted - {:?}, transferred - {:?}",
+                        val.offered.len(),
+                        val.accepted.len(),
+                        val.transferred.len()
+                    );
+                }
+                Err(err) => {
+                    info!("xxx gossip error: {:?}", err);
+                }
+            }
         }
         Ok(())
     }

@@ -1,10 +1,11 @@
-use crate::types::enr::Enr;
-use crate::HistoryContentKey;
-use crate::PossibleHistoryContentValue;
+use discv5::enr::NodeId;
 use serde::{Deserialize, Serialize};
 use ssz_types::{typenum, BitList};
 
 use super::query_trace::QueryTrace;
+use crate::types::enr::Enr;
+use crate::HistoryContentKey;
+use crate::PossibleHistoryContentValue;
 
 pub type DataRadius = ethereum_types::U256;
 pub type Distance = ethereum_types::U256;
@@ -67,4 +68,12 @@ pub struct TraceContentInfo {
 pub struct PaginateLocalContentInfo {
     pub content_keys: Vec<HistoryContentKey>,
     pub total_entries: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipResultInfo {
+    pub offered: Vec<String>,
+    pub accepted: Vec<String>,
+    pub transferred: Vec<String>,
 }

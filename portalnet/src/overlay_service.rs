@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     marker::{PhantomData, Sync},
-    str::FromStr,
     sync::Arc,
     task::Poll,
     time::Duration,
@@ -22,7 +21,7 @@ use discv5::{
 use futures::{channel::oneshot, future::join_all, prelude::*};
 use lazy_static::lazy_static;
 use parking_lot::RwLock;
-use rand::seq::{IteratorRandom, SliceRandom};
+use rand::seq::SliceRandom;
 use smallvec::SmallVec;
 use ssz::Encode;
 use ssz_types::BitList;
@@ -47,6 +46,7 @@ use crate::{
         query_info::{QueryInfo, QueryType, RecursiveFindContentResult},
         query_pool::{QueryId, QueryPool, QueryPoolState, TargetKey},
     },
+    gossip::propagate_gossip_cross_thread,
     metrics::{
         labels::{UtpDirectionLabel, UtpOutcomeLabel},
         overlay::OverlayMetricsReporter,
@@ -63,7 +63,7 @@ use crate::{
     utils::portal_wire,
 };
 use ethportal_api::generate_random_node_id;
-use ethportal_api::types::distance::{Distance, Metric, XorMetric};
+use ethportal_api::types::distance::{Distance, Metric};
 use ethportal_api::types::enr::{Enr, SszEnr};
 use ethportal_api::types::query_trace::QueryTrace;
 use ethportal_api::utils::bytes::{hex_encode, hex_encode_compact};
@@ -1016,10 +1016,12 @@ where
                 id,
             )?)),
             Request::Offer(offer) => Ok(Response::Accept(self.handle_offer(offer, source, id)?)),
-            Request::PopulatedOffer(_) => Err(OverlayRequestError::InvalidRequest(
-                "An offer with content attached is not a valid network message to receive"
-                    .to_owned(),
-            )),
+            Request::PopulatedOffer(_) | Request::PopulatedOfferWithResult(_) => {
+                Err(OverlayRequestError::InvalidRequest(
+                    "An offer with content attached is not a valid network message to receive"
+                        .to_owned(),
+                ))
+            }
         }
     }
 
@@ -1478,9 +1480,11 @@ where
     // Process ACCEPT response
     fn process_accept(&self, response: Accept, enr: Enr, offer: Request) -> anyhow::Result<Accept> {
         // Check that a valid triggering request was sent
+        let mut result_tx = None;
         match &offer {
             Request::Offer(_) => {}
             Request::PopulatedOffer(_) => {}
+            Request::PopulatedOfferWithResult(req) => result_tx = Some(req.result_tx.clone()),
             _ => {
                 return Err(anyhow!("Invalid request message paired with ACCEPT"));
             }
@@ -1488,6 +1492,7 @@ where
 
         // Do not initialize uTP stream if remote node doesn't have interest in the offered content keys
         if response.content_keys.is_zero() {
+            // i think it's ok if we don't do anything with result_tx here?
             return Ok(response);
         }
 
@@ -1501,7 +1506,6 @@ where
 
         let store = Arc::clone(&self.store);
         let response_clone = response.clone();
-
         let utp = Arc::clone(&self.utp_socket);
         let metrics = self.metrics.clone();
 
@@ -1521,6 +1525,9 @@ where
                         peer = ?cid.peer.client(),
                         "Unable to establish uTP conn based on Accept",
                     );
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(false);
+                    }
                     return;
                 }
             };
@@ -1530,6 +1537,13 @@ where
                     Self::provide_requested_content(store, &response_clone, offer.content_keys)
                 }
                 Request::PopulatedOffer(offer) => Ok(response_clone
+                    .content_keys
+                    .iter()
+                    .zip(offer.content_items)
+                    .filter(|(is_accepted, _item)| *is_accepted)
+                    .map(|(_is_accepted, (_key, val))| val)
+                    .collect()),
+                Request::PopulatedOfferWithResult(offer) => Ok(response_clone
                     .content_keys
                     .iter()
                     .zip(offer.content_items)
@@ -1553,6 +1567,9 @@ where
                         peer = ?cid.peer.client(),
                         "Error decoding previously offered content items"
                     );
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(false);
+                    }
                     return;
                 }
             };
@@ -1561,19 +1578,32 @@ where
                 Ok(payload) => payload,
                 Err(err) => {
                     warn!(%err, "Unable to build content payload");
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(false);
+                    }
                     return;
                 }
             };
 
             // send the content to the acceptor over a uTP stream
-            if let Err(err) = Self::send_utp_content(stream, &content_payload, metrics).await {
-                warn!(
-                    %err,
-                    %cid.send,
-                    %cid.recv,
-                    peer = ?cid.peer.client(),
-                    "Error sending content over uTP, in response to ACCEPT"
-                );
+            match Self::send_utp_content(stream, &content_payload, metrics).await {
+                Ok(_) => {
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(true);
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        %err,
+                        %cid.send,
+                        %cid.recv,
+                        peer = ?cid.peer.client(),
+                        "Error sending content over uTP, in response to ACCEPT"
+                    );
+                    if let Some(tx) = result_tx {
+                        let _ = tx.send(false);
+                    }
+                }
             }
         });
 
@@ -2513,154 +2543,7 @@ where
     }
 }
 
-// Propagate gossip in a way that can be used across threads, without &self
-pub fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
-    content: Vec<(TContentKey, Vec<u8>)>,
-    kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
-    command_tx: mpsc::UnboundedSender<OverlayCommand<TContentKey>>,
-) -> usize {
-    // Get all connected nodes from overlay routing table
-    let kbuckets = kbuckets.read();
-    let mut all_nodes: Vec<&kbucket::Node<NodeId, Node>> = kbuckets
-        .buckets_iter()
-        .flat_map(|kbucket| {
-            kbucket
-                .iter()
-                .filter(|node| node.status.is_connected())
-                .collect::<Vec<&kbucket::Node<NodeId, Node>>>()
-        })
-        .collect();
-
-    if all_nodes.is_empty() {
-        warn!("No connected nodes, using disconnected nodes for gossip.");
-        all_nodes = kbuckets
-            .buckets_iter()
-            .flat_map(|kbucket| {
-                kbucket
-                    .iter()
-                    .collect::<Vec<&kbucket::Node<NodeId, Node>>>()
-            })
-            .collect();
-    }
-
-    if all_nodes.is_empty() {
-        // If there are no nodes whatsoever in the routing table the gossip cannot proceed.
-        warn!("No nodes in routing table, gossip cannot proceed.");
-        return 0;
-    }
-
-    // HashMap to temporarily store all interested ENRs and the content.
-    // Key is base64 string of node's ENR.
-    let mut enrs_and_content: HashMap<String, Vec<(RawContentKey, Vec<u8>)>> = HashMap::new();
-
-    // Filter all nodes from overlay routing table where XOR_distance(content_id, nodeId) < node radius
-    for (content_key, content_value) in content {
-        let mut interested_enrs: Vec<Enr> = all_nodes
-            .clone()
-            .into_iter()
-            .filter(|node| {
-                XorMetric::distance(&content_key.content_id(), &node.key.preimage().raw())
-                    < node.value.data_radius()
-            })
-            .map(|node| node.value.enr())
-            .collect();
-
-        // Continue if no nodes are interested in the content
-        if interested_enrs.is_empty() {
-            debug!(
-                content.id = %hex_encode(content_key.content_id()),
-                kbuckets.len = all_nodes.len(),
-                "No peers eligible for neighborhood gossip"
-            );
-            continue;
-        }
-
-        // Sort all eligible nodes by proximity to the content.
-        interested_enrs.sort_by(|a, b| {
-            let distance_a = XorMetric::distance(&content_key.content_id(), &a.node_id().raw());
-            let distance_b = XorMetric::distance(&content_key.content_id(), &b.node_id().raw());
-            distance_a.partial_cmp(&distance_b).unwrap_or_else(|| {
-                warn!(a = %distance_a, b = %distance_b, "Error comparing two distances");
-                std::cmp::Ordering::Less
-            })
-        });
-
-        let gossip_recipients = select_gossip_recipients(interested_enrs);
-
-        // Temporarily store all randomly selected nodes with the content of interest.
-        // We want this so we can offer all the content to interested node in one request.
-        let raw_item = (content_key.into(), content_value);
-        for enr in gossip_recipients {
-            enrs_and_content
-                .entry(enr.to_base64())
-                .or_default()
-                .push(raw_item.clone());
-        }
-    }
-
-    let num_propagated_peers = enrs_and_content.len();
-    // Create and send OFFER overlay request to the interested nodes
-    for (enr_string, interested_content) in enrs_and_content.into_iter() {
-        let enr = match Enr::from_str(&enr_string) {
-            Ok(enr) => enr,
-            Err(err) => {
-                error!(error = %err, enr.base64 = %enr_string, "Error decoding ENR from base-64");
-                continue;
-            }
-        };
-
-        let offer_request = Request::PopulatedOffer(PopulatedOffer {
-            content_items: interested_content,
-        });
-
-        let overlay_request = OverlayRequest::new(
-            offer_request,
-            RequestDirection::Outgoing { destination: enr },
-            None,
-            None,
-        );
-
-        if let Err(err) = command_tx.send(OverlayCommand::Request(overlay_request)) {
-            error!(error = %err, "Error sending OFFER message to service")
-        }
-    }
-
-    num_propagated_peers
-}
-
-/// Randomly select `num_enrs` nodes from `enrs`.
-fn select_random_enrs(num_enrs: usize, enrs: Vec<Enr>) -> Vec<Enr> {
-    let random_enrs: Vec<Enr> = enrs
-        .into_iter()
-        .choose_multiple(&mut rand::thread_rng(), num_enrs);
-    random_enrs
-}
-
-const NUM_CLOSEST_NODES: usize = 4;
-const NUM_FARTHER_NODES: usize = 4;
-/// Selects gossip recipients from a vec of sorted interested ENRs.
-/// Returned vec is a concatenation of, at most:
-/// 1. First `NUM_CLOSEST_NODES` elements of `interested_sorted_enrs`.
-/// 2. `NUM_FARTHER_NODES` elements randomly selected from `interested_sorted_enrs[NUM_CLOSEST_NODES..]`
-fn select_gossip_recipients(interested_sorted_enrs: Vec<Enr>) -> Vec<Enr> {
-    let mut gossip_recipients: Vec<Enr> = vec![];
-
-    // Get first n closest nodes
-    gossip_recipients.extend(
-        interested_sorted_enrs
-            .clone()
-            .into_iter()
-            .take(NUM_CLOSEST_NODES),
-    );
-    if interested_sorted_enrs.len() > NUM_CLOSEST_NODES {
-        let farther_enrs = interested_sorted_enrs[NUM_CLOSEST_NODES..].to_vec();
-        // Get random non-close ENRs to gossip to.
-        let random_farther_enrs = select_random_enrs(NUM_FARTHER_NODES, farther_enrs);
-        gossip_recipients.extend(random_farther_enrs);
-    }
-    gossip_recipients
-}
-
+///
 /// The result of the `query_event_poll` indicating an action is required to further progress an
 /// active query.
 pub enum QueryEvent<TQuery, TContentKey> {
@@ -4024,21 +3907,6 @@ mod tests {
             }
             _ => panic!("Unexpected find content query result type"),
         }
-    }
-
-    #[rstest]
-    #[case(vec![generate_random_remote_enr().1; 0], 0)]
-    #[case(vec![generate_random_remote_enr().1; NUM_CLOSEST_NODES - 1], NUM_CLOSEST_NODES - 1)]
-    #[case(vec![generate_random_remote_enr().1; NUM_CLOSEST_NODES], NUM_CLOSEST_NODES)]
-    #[case(vec![generate_random_remote_enr().1; NUM_CLOSEST_NODES + 1], NUM_CLOSEST_NODES + 1)]
-    #[case(vec![generate_random_remote_enr().1; NUM_CLOSEST_NODES + NUM_FARTHER_NODES], NUM_CLOSEST_NODES + NUM_FARTHER_NODES)]
-    #[case(vec![generate_random_remote_enr().1; 256], NUM_CLOSEST_NODES + NUM_FARTHER_NODES)]
-    fn test_select_gossip_recipients_no_panic(
-        #[case] all_nodes: Vec<Enr>,
-        #[case] expected_size: usize,
-    ) {
-        let gossip_recipients = select_gossip_recipients(all_nodes);
-        assert_eq!(gossip_recipients.len(), expected_size);
     }
 
     #[tokio::test]

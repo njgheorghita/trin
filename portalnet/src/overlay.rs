@@ -25,7 +25,9 @@ use utp_rs::socket::UtpSocket;
 
 use crate::{
     discovery::{Discovery, UtpEnr},
+    events::EventEnvelope,
     find::query_info::{FindContentResult, RecursiveFindContentResult},
+    gossip::{trace_propagate_gossip_cross_thread, GossipResult},
     metrics::overlay::OverlayMetricsReporter,
     metrics::portalnet::PORTALNET_METRICS,
     overlay_service::{
@@ -48,8 +50,6 @@ use ethportal_api::utils::bytes::hex_encode;
 use ethportal_api::OverlayContentKey;
 use ethportal_api::RawContentKey;
 use trin_validation::validator::Validator;
-
-use crate::events::EventEnvelope;
 
 /// Configuration parameters for the overlay network.
 #[derive(Clone)]
@@ -214,14 +214,11 @@ where
         self.send_overlay_request(request, direction).await
     }
 
-    /// Propagate gossip accepted content via OFFER/ACCEPT, return number of peers propagated
-    pub fn propagate_gossip(&self, content: Vec<(TContentKey, Vec<u8>)>) -> usize {
+    /// Propagate gossip accepted content via OFFER/ACCEPT, XXX
+    pub async fn propagate_gossip(&self, content_key: TContentKey, data: Vec<u8>) -> GossipResult {
         let kbuckets = Arc::clone(&self.kbuckets);
-        crate::overlay_service::propagate_gossip_cross_thread(
-            content,
-            kbuckets,
-            self.command_tx.clone(),
-        )
+        trace_propagate_gossip_cross_thread(content_key, data, kbuckets, self.command_tx.clone())
+            .await
     }
 
     /// Returns a vector of all ENR node IDs of nodes currently contained in the routing table.

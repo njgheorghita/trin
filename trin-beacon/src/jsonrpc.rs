@@ -277,10 +277,10 @@ async fn gossip(
     content_value: BeaconContentValue,
 ) -> Result<Value, String> {
     let data = content_value.encode();
-    let content_values = vec![(content_key, data)];
     let overlay = network.read().await.overlay.clone();
-    let num_peers = overlay.propagate_gossip(content_values);
-    Ok(num_peers.into())
+    let gossip_result = overlay.propagate_gossip(content_key, data).await;
+    let val = serde_json::to_value(gossip_result).map_err(|e| e.to_string())?;
+    Ok(val)
 }
 
 /// Constructs a JSON call for the Offer method.
