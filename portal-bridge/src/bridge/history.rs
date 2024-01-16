@@ -75,10 +75,23 @@ impl HistoryBridge {
 impl HistoryBridge {
     pub async fn launch(&self) {
         info!("Launching bridge mode: {:?}", self.mode);
+        let latest_block = self.execution_api.get_latest_block_number().await.expect(
+            "Error launching bridge in backfill mode. Unable to get latest block from provider.",
+        );
+        if let Err(msg) = self.mode.validate_against_latest(latest_block) {
+            warn!(
+                "Error launching bridge in {:?} mode. {:?}",
+                self.mode,
+                msg.to_string()
+            );
+            return;
+        };
         match self.mode.clone() {
             BridgeMode::Test(path) => self.launch_test(path).await,
-            BridgeMode::Latest => self.launch_latest().await,
-            _ => self.launch_backfill().await,
+            BridgeMode::Latest => self.launch_latest(latest_block).await,
+            BridgeMode::Single(val) => self.launch_single(val).await,
+            BridgeMode::Range(val) => self.launch_range(val).await,
+            BridgeMode::Backfill(val) => self.launch_backfill(val, latest_block).await,
         }
         info!("Bridge mode: {:?} complete.", self.mode);
     }
@@ -107,10 +120,8 @@ impl HistoryBridge {
 
     // Devops nodes don't have websockets available, so we can't actually poll the latest block.
     // Instead we loop on a short interval and fetch the latest blocks not yet served.
-    async fn launch_latest(&self) {
-        let mut block_index = self.execution_api.get_latest_block_number().await.expect(
-            "Error launching bridge in latest mode. Unable to get latest block from provider.",
-        );
+    async fn launch_latest(&self, latest_block: u64) {
+        let mut block_index = latest_block;
         loop {
             sleep(Duration::from_secs(LATEST_BLOCK_POLL_RATE)).await;
             let latest_block = match self.execution_api.get_latest_block_number().await {
@@ -140,16 +151,86 @@ impl HistoryBridge {
         }
     }
 
-    async fn launch_backfill(&self) {
-        let latest_block = self.execution_api.get_latest_block_number().await.expect(
-            "Error launching bridge in backfill mode. Unable to get latest block from provider.",
-        );
-        let (looped, mode_type) = match self.mode.clone() {
-            BridgeMode::Backfill(val) => (true, val),
-            BridgeMode::Single(val) => (false, val),
-            _ => panic!("Invalid backfill mode"),
+    async fn launch_single(&self, mode: ModeType) {
+        match mode {
+            ModeType::Block(block_number) => {
+                self.launch_range(Range {
+                    start: block_number,
+                    end: block_number + 1,
+                }).await;
+            }
+            ModeType::Epoch(epoch_number) => {
+                self.launch_range(Range {
+                    start: epoch_number * EPOCH_SIZE,
+                    end: (epoch_number + 1) * EPOCH_SIZE,
+                }).await;
+            }
+            ModeType::Range(_) => panic!("Invalid mode type for single mode, range isn't supported. Use `range:` prefix instead."),
         };
-        let (mut start_block, mut end_block, mut epoch_index) = match mode_type {
+    }
+
+    async fn launch_range(&self, range: Range<u64>) {
+        // check if range crosses epoch boundary
+        let start_epoch = range.start / EPOCH_SIZE;
+        let end_epoch = range.end / EPOCH_SIZE;
+        // looped is true if the range crosses an epoch boundary
+        let looped = start_epoch != end_epoch;
+        let (mut start_block, mut end_block, mut epoch_index) = {
+            let end_block = match looped {
+                true => (start_epoch + 1) * EPOCH_SIZE,
+                false => range.end,
+            };
+            (range.start, end_block, start_epoch)
+        };
+        // per-loop range of blocks to gossip
+        let mut gossip_range = Range {
+            start: start_block,
+            end: end_block,
+        };
+        while epoch_index <= end_epoch {
+            // Using epoch_size chunks & epoch boundaries ensures that every
+            // "chunk" shares an epoch accumulator avoiding the need to
+            // look up the epoch acc on a header by header basis
+            let epoch_acc = if gossip_range.end <= MERGE_BLOCK_NUMBER {
+                match self.get_epoch_acc(epoch_index).await {
+                    Ok(val) => Some(val),
+                    Err(msg) => {
+                        warn!("Unable to find epoch acc for gossip range: {gossip_range:?}. Skipping iteration: {msg:?}");
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            info!("fetching headers in range: {gossip_range:?}");
+            for height in gossip_range.clone() {
+                let epoch_acc = epoch_acc.clone();
+                let portal_clients = self.portal_clients.clone();
+                let execution_api = self.execution_api.clone();
+                tokio::spawn(async move {
+                    let _ =
+                        Self::serve_full_block(height, epoch_acc, portal_clients, execution_api)
+                            .in_current_span()
+                            .await;
+                });
+            }
+            // update index values if we're looping
+            epoch_index += 1;
+            start_block = epoch_index * EPOCH_SIZE;
+            if epoch_index == end_epoch {
+                end_block = range.end;
+            } else {
+                end_block = start_block + EPOCH_SIZE;
+            }
+            gossip_range = Range {
+                start: start_block,
+                end: end_block,
+            };
+        }
+    }
+
+    async fn launch_backfill(&self, mode: ModeType, latest_block: u64) {
+        let (mut start_block, mut end_block, mut epoch_index) = match mode {
             // end block will be same for an epoch in single & backfill modes
             ModeType::Epoch(epoch_number) => (
                 epoch_number * EPOCH_SIZE,
@@ -158,24 +239,13 @@ impl HistoryBridge {
             ),
             ModeType::Block(block) => {
                 let epoch_index = block / EPOCH_SIZE;
-                let end_block = match looped {
-                    true => (epoch_index + 1) * EPOCH_SIZE,
-                    false => block + 1,
-                };
+                let end_block = (epoch_index + 1) * EPOCH_SIZE;
                 (block, end_block, epoch_index)
             }
+            ModeType::Range(_) => panic!("Invalid mode type for backfill mode, range isn't supported. Use `range:` prefix instead."),
         };
-        // check that the end block is not greater than the latest block
-        if end_block > latest_block {
-            end_block = latest_block;
-        }
-        if start_block > latest_block {
-            panic!(
-                "Starting block/epoch is greater than latest block. 
-                        Please specify a starting block/epoch that begins before the current block."
-            );
-        }
         let current_epoch = latest_block / EPOCH_SIZE;
+        // per-loop range of blocks to gossip
         let mut gossip_range = Range {
             start: start_block,
             end: end_block,
@@ -206,9 +276,6 @@ impl HistoryBridge {
                             .in_current_span()
                             .await;
                 });
-            }
-            if !looped {
-                break;
             }
             // update index values if we're looping
             epoch_index += 1;
