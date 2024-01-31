@@ -319,6 +319,7 @@ impl Encodable for LegacyReceipt {
     }
 }
 
+// derive a trait?
 impl Encodable for Receipt {
     fn rlp_append(&self, s: &mut RlpStream) {
         match self {

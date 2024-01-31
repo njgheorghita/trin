@@ -156,7 +156,7 @@ impl BlockBody {
         // Insert txs into tx tree
         for (index, tx) in self.transactions()?.iter().enumerate() {
             let path = rlp::encode(&index).freeze().to_vec();
-            let encoded_tx = tx.encode();
+            let encoded_tx = rlp::encode(tx);
             trie.insert(&path, &encoded_tx)
                 .map_err(|err| anyhow!("Error calculating transactions root: {err:?}"))?;
         }
@@ -222,7 +222,8 @@ impl ssz::Encode for BlockBodyLegacy {
         let offset =
             <Vec<Vec<u8>> as Encode>::ssz_fixed_len() + <Vec<u8> as Encode>::ssz_fixed_len();
         let mut encoder = SszEncoder::container(buf, offset);
-        let encoded_txs: Vec<Vec<u8>> = self.txs.iter().map(|tx| tx.encode()).collect();
+        let encoded_txs: Vec<Vec<u8>> =
+            self.txs.iter().map(|tx| rlp::encode(tx).to_vec()).collect();
         let rlp_uncles: Vec<u8> = rlp::encode_list(&self.uncles).to_vec();
         encoder.append(&encoded_txs);
         encoder.append(&rlp_uncles);
@@ -248,7 +249,7 @@ impl ssz::Decode for BlockBodyLegacy {
         let uncles: Vec<u8> = decoder.decode_next()?;
         let txs: Vec<Transaction> = txs
             .iter()
-            .map(|bytes| Transaction::decode(bytes))
+            .map(|bytes| rlp::decode(bytes))
             .collect::<Result<Vec<Transaction>, _>>()
             .map_err(|e| {
                 ssz::DecodeError::BytesInvalid(format!(
@@ -265,14 +266,6 @@ pub struct BlockBodyMerge {
     pub txs: Vec<Transaction>,
 }
 
-impl Decodable for BlockBodyMerge {
-    // who knows if these are correct...
-    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        let txs: Vec<Transaction> = rlp.list_at(0)?;
-        Ok(Self { txs })
-    }
-}
-
 impl ssz::Encode for BlockBodyMerge {
     // note: MAX_LENGTH attributes (defined in portal history spec) are not currently enforced
     fn is_ssz_fixed_len() -> bool {
@@ -283,7 +276,8 @@ impl ssz::Encode for BlockBodyMerge {
         let offset =
             <Vec<Vec<u8>> as Encode>::ssz_fixed_len() + <Vec<u8> as Encode>::ssz_fixed_len();
         let mut encoder = SszEncoder::container(buf, offset);
-        let encoded_txs: Vec<Vec<u8>> = self.txs.iter().map(|tx| tx.encode()).collect();
+        let encoded_txs: Vec<Vec<u8>> =
+            self.txs.iter().map(|tx| rlp::encode(tx).to_vec()).collect();
         let empty_uncles: Vec<Header> = vec![];
         let rlp_uncles: Vec<u8> = rlp::encode_list(&empty_uncles).to_vec();
         encoder.append(&encoded_txs);
@@ -309,11 +303,12 @@ impl ssz::Decode for BlockBodyMerge {
         let uncles: Vec<u8> = decoder.decode_next()?;
         let txs: Vec<Transaction> = txs
             .iter()
-            .map(|bytes| Transaction::decode(bytes))
+            .map(|bytes| rlp::decode(bytes))
             .collect::<Result<Vec<Transaction>, _>>()
             .map_err(|e| {
                 ssz::DecodeError::BytesInvalid(format!(
-                    "Merge block body contains invalid txs: {e:?}",
+                    "Merge block body contains invalid txs: {:?}",
+                    e
                 ))
             })?;
         let uncles = rlp::decode_list::<Header>(&uncles);
@@ -335,7 +330,7 @@ impl Encodable for BlockBodyMerge {
         s.begin_list(3);
         s.begin_list(self.txs.len());
         for tx in &self.txs {
-            let encoded = tx.encode();
+            let encoded = rlp::encode(tx);
             s.append_raw(&encoded, encoded.len());
         }
         s.append_list(&empty_uncles);
@@ -343,29 +338,18 @@ impl Encodable for BlockBodyMerge {
     }
 }
 
+impl Decodable for BlockBodyMerge {
+    // who knows if these are correct...
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        let txs: Vec<Transaction> = rlp.list_at(0)?;
+        Ok(Self { txs })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct BlockBodyShanghai {
     pub txs: Vec<Transaction>,
     pub withdrawals: Vec<Withdrawal>,
-}
-
-impl Decodable for BlockBodyShanghai {
-    // who knows if these are correct...
-    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
-        let txs: Vec<Transaction> = rlp.list_at(0)?;
-        let withdrawals: Vec<Vec<u8>> = rlp.at(1)?.as_list()?;
-        let withdrawals: Vec<Withdrawal> = withdrawals
-            .iter()
-            .map(|bytes| rlp::decode(bytes))
-            .collect::<Result<Vec<Withdrawal>, _>>()
-            .map_err(|e| {
-                ssz::DecodeError::BytesInvalid(format!(
-                    "Shanghai block body contains invalid withdrawals: {e:?}",
-                ))
-            })
-            .expect("xxxx failed to decode withdrawals");
-        Ok(Self { txs, withdrawals })
-    }
 }
 
 impl ssz::Encode for BlockBodyShanghai {
@@ -379,7 +363,8 @@ impl ssz::Encode for BlockBodyShanghai {
             + <Vec<u8> as Encode>::ssz_fixed_len()
             + <Vec<Vec<u8>> as Encode>::ssz_fixed_len();
         let mut encoder = SszEncoder::container(buf, offset);
-        let encoded_txs: Vec<Vec<u8>> = self.txs.iter().map(|tx| tx.encode()).collect();
+        let encoded_txs: Vec<Vec<u8>> =
+            self.txs.iter().map(|tx| rlp::encode(tx).to_vec()).collect();
         let empty_uncles: Vec<Header> = vec![];
         let rlp_uncles: Vec<u8> = rlp::encode_list(&empty_uncles).to_vec();
         let encoded_withdrawals: Vec<Vec<u8>> = self
@@ -412,9 +397,9 @@ impl ssz::Decode for BlockBodyShanghai {
         let txs: Vec<Vec<u8>> = decoder.decode_next()?;
         let uncles: Vec<u8> = decoder.decode_next()?;
         let withdrawals: Vec<Vec<u8>> = decoder.decode_next()?;
-        let txs: Vec<Transaction> = txs
+        let txs = txs
             .iter()
-            .map(|bytes| Transaction::decode(bytes))
+            .map(|bytes| rlp::decode(bytes))
             .collect::<Result<Vec<Transaction>, _>>()
             .map_err(|e| {
                 ssz::DecodeError::BytesInvalid(format!(
@@ -451,9 +436,10 @@ impl Encodable for BlockBodyShanghai {
             .map(|withdrawal| rlp::encode(withdrawal).to_vec())
             .collect();
         s.begin_list(3);
+
         s.begin_list(self.txs.len());
         for tx in &self.txs {
-            let encoded = tx.encode();
+            let encoded = rlp::encode(tx);
             s.append_raw(&encoded, encoded.len());
         }
         s.append_list(&rlp_uncles);
@@ -462,6 +448,25 @@ impl Encodable for BlockBodyShanghai {
             let encoded = rlp::encode(withdrawal).to_vec();
             s.append_raw(&encoded, encoded.len());
         }
+    }
+}
+
+impl Decodable for BlockBodyShanghai {
+    // who knows if these are correct...
+    fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
+        let txs: Vec<Transaction> = rlp.list_at(0)?;
+        let withdrawals: Vec<Vec<u8>> = rlp.at(1)?.as_list()?;
+        let withdrawals: Vec<Withdrawal> = withdrawals
+            .iter()
+            .map(|bytes| rlp::decode(bytes))
+            .collect::<Result<Vec<Withdrawal>, _>>()
+            .map_err(|e| {
+                ssz::DecodeError::BytesInvalid(format!(
+                    "Shanghai block body contains invalid withdrawals: {e:?}",
+                ))
+            })
+            .expect("xxxx failed to decode withdrawals");
+        Ok(Self { txs, withdrawals })
     }
 }
 
@@ -489,14 +494,14 @@ mod tests {
     #[case(TX6, 41942)]
     fn encode_and_decode_txs(#[case] tx: &str, #[case] expected_nonce: u32) {
         let tx_rlp = hex_decode(tx).unwrap();
-        let tx = Transaction::decode(&tx_rlp).expect("error decoding tx");
+        let tx = rlp::decode(&tx_rlp).expect("error decoding tx");
         let expected_nonce = U256::from(expected_nonce);
         match &tx {
             Transaction::Legacy(tx) => assert_eq!(tx.nonce, expected_nonce),
             Transaction::AccessList(tx) => assert_eq!(tx.nonce, expected_nonce),
             Transaction::EIP1559(tx) => assert_eq!(tx.nonce, expected_nonce),
         }
-        let encoded_tx = tx.encode();
+        let encoded_tx = rlp::encode(&tx);
         assert_eq!(hex_encode(tx_rlp), hex_encode(encoded_tx));
     }
 
@@ -563,7 +568,7 @@ mod tests {
     }
 
     #[test_log::test]
-    fn block_body_ssz_encoding_decoding_round_trip() {
+    fn block_body_ssz_encoding_decoding_round_tripxx() {
         let block_body = get_14764013_block_body();
         let encoded = block_body.as_ssz_bytes();
 
@@ -599,7 +604,7 @@ mod tests {
     }
 
     #[test_log::test]
-    fn shanghai_block_body_round_trip() {
+    fn shanghai_block_body_round_tripx() {
         // block 17139055
         let raw = std::fs::read("../test_assets/mainnet/block_body_17139055.bin").unwrap();
         let body = BlockBodyShanghai::from_ssz_bytes(&raw).unwrap();
@@ -607,6 +612,7 @@ mod tests {
         let withdrawals: Vec<Withdrawal> = serde_json::from_str(&shanghai_withdrawals()).unwrap();
         assert_eq!(withdrawals, body.withdrawals);
         let encoded = body.as_ssz_bytes();
+
         assert_eq!(encoded, raw);
     }
 
@@ -641,25 +647,25 @@ mod tests {
 
     fn get_14764013_block_body() -> BlockBody {
         let txs: Vec<Transaction> = vec![
-            Transaction::decode(&hex_decode(TX1).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX2).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX3).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX4).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX5).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX6).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX7).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX8).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX9).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX10).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX11).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX12).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX13).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX14).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX15).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX16).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX17).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX18).unwrap()).unwrap(),
-            Transaction::decode(&hex_decode(TX19).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX1).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX2).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX3).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX4).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX5).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX6).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX7).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX8).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX9).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX10).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX11).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX12).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX13).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX14).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX15).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX16).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX17).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX18).unwrap()).unwrap(),
+            rlp::decode(&hex_decode(TX19).unwrap()).unwrap(),
         ];
         let uncles_rlp = &hex_decode(UNCLE).unwrap();
         let uncles: Vec<Header> = rlp::decode_list(uncles_rlp);
