@@ -1,8 +1,8 @@
-use crate::discovery::UtpEnr;
+use crate::{discovery::UtpEnr, overlay_service::OverlayRequestError};
 use anyhow::anyhow;
-use ethportal_api::types::enr::Enr;
+use ethportal_api::types::query_trace::QueryTrace;
 use lazy_static::lazy_static;
-use std::{io, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::debug;
 use trin_metrics::{
@@ -31,6 +31,11 @@ lazy_static! {
     pub static ref UTP_CONN_CFG: ConnectionConfig = ConnectionConfig { max_packet_size: 1024, ..Default::default()};
 }
 
+pub enum UtpConnectionSide {
+    Connect,
+    Accept,
+}
+
 impl UtpController {
     pub fn new(
         utp_transfer_limit: usize,
@@ -45,52 +50,91 @@ impl UtpController {
         }
     }
 
-    /// Connect with a peer given the connection id, and return the data received from the peer.
-    pub async fn connect_inbound_stream(
+    pub async fn inbound_stream(
         &self,
-        connection_id: u16,
-        peer: Enr,
-    ) -> anyhow::Result<Vec<u8>> {
+        cid: ConnectionId<UtpEnr>,
+        side: UtpConnectionSide,
+        trace: Option<QueryTrace>,
+    ) -> anyhow::Result<Vec<u8>, OverlayRequestError> {
+        // Wait for an incoming connection with the given CID. Then, read the data from the uTP
+        // stream.
         self.metrics
             .report_utp_active_inc(UtpDirectionLabel::Inbound);
-        let cid = utp_rs::cid::ConnectionId {
-            recv: connection_id,
-            send: connection_id.wrapping_add(1),
-            peer: UtpEnr(peer),
+        let (stream, message) = match side {
+            UtpConnectionSide::Connect => (
+                self.utp_socket
+                    .connect_with_cid(cid.clone(), *UTP_CONN_CFG)
+                    .await,
+                "connect inbound uTP stream",
+            ),
+            UtpConnectionSide::Accept => (
+                self.utp_socket
+                    .accept_with_cid(cid.clone(), *UTP_CONN_CFG)
+                    .await,
+                "accept inbound uTP stream",
+            ),
         };
-        let stream = match self.connect_with_cid(cid.clone(), *UTP_CONN_CFG).await {
+        let mut stream = match stream {
             Ok(stream) => stream,
             Err(err) => {
                 self.metrics.report_utp_outcome(
                     UtpDirectionLabel::Inbound,
                     UtpOutcomeLabel::FailedConnection,
                 );
-                debug!(
-                    %err,
-                    cid.send,
-                    cid.recv,
-                    peer = ?cid.peer.client(),
-                    "Unable to establish uTP conn based on Content response",
-                );
-                return Err(anyhow!("unable to establish utp conn"));
+                debug!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "unable to {message}");
+                return Err(OverlayRequestError::ContentNotFound {
+                    message: format!(
+                        "Unable to locate content on the network: unable to {message}"
+                    ),
+                    utp: true,
+                    trace,
+                });
             }
         };
 
-        // receive_utp_content handles metrics reporting of successful & failed rx
-        match Self::receive_utp_content(stream, self.metrics.clone()).await {
-            Ok(data) => Ok(data),
-            Err(err) => {
-                debug!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from uTP stream, while handling a FindContent request.");
-                Err(anyhow!("error reading data from uTP stream"))
-            }
+        let mut data = vec![];
+        if let Err(err) = stream.read_to_eof(&mut data).await {
+            self.metrics
+                .report_utp_outcome(UtpDirectionLabel::Inbound, UtpOutcomeLabel::FailedDataTx);
+            debug!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), "error reading data from {message}");
+            return Err(OverlayRequestError::ContentNotFound {
+                message: format!(
+                    "Unable to locate content on the network: error reading data from {message}"
+                ),
+                utp: true,
+                trace,
+            });
         }
+
+        // report utp tx as successful, even if we go on to fail to process the payload
+        self.metrics
+            .report_utp_outcome(UtpDirectionLabel::Inbound, UtpOutcomeLabel::Success);
+        Ok(data)
     }
 
-    /// Connect with a peer given the connection id, and transfer the data to the peer.
-    pub async fn connect_outbound_stream(&self, cid: ConnectionId<UtpEnr>, data: Vec<u8>) -> bool {
+    pub async fn outbound_stream(
+        &self,
+        cid: ConnectionId<UtpEnr>,
+        data: Vec<u8>,
+        side: UtpConnectionSide,
+    ) -> bool {
         self.metrics
             .report_utp_active_inc(UtpDirectionLabel::Outbound);
-        let stream = match self.connect_with_cid(cid.clone(), *UTP_CONN_CFG).await {
+        let (stream, message) = match side {
+            UtpConnectionSide::Connect => (
+                self.utp_socket
+                    .connect_with_cid(cid.clone(), *UTP_CONN_CFG)
+                    .await,
+                "connect outbound uTP stream",
+            ),
+            UtpConnectionSide::Accept => (
+                self.utp_socket
+                    .accept_with_cid(cid.clone(), *UTP_CONN_CFG)
+                    .await,
+                "accept outbound uTP stream",
+            ),
+        };
+        let stream = match stream {
             Ok(stream) => stream,
             Err(err) => {
                 self.metrics.report_utp_outcome(
@@ -102,7 +146,7 @@ impl UtpController {
                     cid.send,
                     cid.recv,
                     peer = ?cid.peer.client(),
-                    "Unable to establish uTP conn based on Accept",
+                    "Unable to establish uTP conn based on {message}",
                 );
                 return false;
             }
@@ -117,71 +161,10 @@ impl UtpController {
                     %cid.send,
                     %cid.recv,
                     peer = ?cid.peer.client(),
-                    "Error sending content over uTP, in response to ACCEPT"
+                    "Error sending content over uTP, in response to {message}"
                 );
                 false
             }
-        }
-    }
-
-    /// Accept an outbound stream given the connection id, and transfer the data to the peer.
-    pub async fn accept_outbound_stream(&self, cid: ConnectionId<UtpEnr>, data: Vec<u8>) {
-        self.metrics
-            .report_utp_active_inc(UtpDirectionLabel::Outbound);
-        let stream = match self.accept_with_cid(cid.clone(), *UTP_CONN_CFG).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                self.metrics.report_utp_outcome(
-                    UtpDirectionLabel::Outbound,
-                    UtpOutcomeLabel::FailedConnection,
-                );
-                debug!(
-                    %err,
-                    %cid.send,
-                    %cid.recv,
-                    peer = ?cid.peer.client(),
-                    "unable to accept uTP stream for CID"
-                );
-                return;
-            }
-        };
-        // send_utp_content handles metrics reporting of successful & failed txs
-        if let Err(err) = Self::send_utp_content(stream, &data, self.metrics.clone()).await {
-            debug!(
-                %err,
-                %cid.send,
-                %cid.recv,
-                peer = ?cid.peer.client(),
-                "Error sending content over uTP, in response to FindContent"
-            );
-        };
-    }
-
-    /// Accept an inbound stream given the connection id, and return the data received from the
-    /// peer.
-    pub async fn accept_inbound_stream(
-        &self,
-        cid: ConnectionId<UtpEnr>,
-    ) -> anyhow::Result<Vec<u8>> {
-        // Wait for an incoming connection with the given CID. Then, read the data from the uTP
-        // stream.
-        self.metrics
-            .report_utp_active_inc(UtpDirectionLabel::Inbound);
-        let stream = match self.accept_with_cid(cid.clone(), *UTP_CONN_CFG).await {
-            Ok(stream) => stream,
-            Err(_) => {
-                self.metrics.report_utp_outcome(
-                    UtpDirectionLabel::Inbound,
-                    UtpOutcomeLabel::FailedConnection,
-                );
-                return Err(anyhow!("unable to accept uTP stream"));
-            }
-        };
-
-        // receive_utp_content handles metrics reporting of successful & failed rx
-        match Self::receive_utp_content(stream, self.metrics.clone()).await {
-            Ok(data) => Ok(data),
-            Err(_) => Err(anyhow!("error reading data from uTP stream")),
         }
     }
 
@@ -218,37 +201,6 @@ impl UtpController {
         };
         metrics.report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::Success);
         Ok(())
-    }
-
-    async fn receive_utp_content(
-        mut stream: UtpStream<UtpEnr>,
-        metrics: OverlayMetricsReporter,
-    ) -> anyhow::Result<Vec<u8>> {
-        let mut data = vec![];
-        if let Err(err) = stream.read_to_eof(&mut data).await {
-            metrics.report_utp_outcome(UtpDirectionLabel::Inbound, UtpOutcomeLabel::FailedDataTx);
-            return Err(anyhow!("Error reading data from uTP stream: {err}"));
-        }
-
-        // report utp tx as successful, even if we go on to fail to process the payload
-        metrics.report_utp_outcome(UtpDirectionLabel::Inbound, UtpOutcomeLabel::Success);
-        Ok(data)
-    }
-
-    async fn connect_with_cid(
-        &self,
-        cid: ConnectionId<UtpEnr>,
-        config: ConnectionConfig,
-    ) -> io::Result<UtpStream<UtpEnr>> {
-        self.utp_socket.connect_with_cid(cid, config).await
-    }
-
-    async fn accept_with_cid(
-        &self,
-        cid: ConnectionId<UtpEnr>,
-        config: ConnectionConfig,
-    ) -> io::Result<UtpStream<UtpEnr>> {
-        self.utp_socket.accept_with_cid(cid, config).await
     }
 
     pub fn cid(&self, peer: UtpEnr, is_initiator: bool) -> ConnectionId<UtpEnr> {
