@@ -29,11 +29,9 @@ lazy_static! {
     pub static ref UTP_CONN_CFG: ConnectionConfig = ConnectionConfig { max_packet_size: 1024, ..Default::default()};
 }
 
-/// UtpConnectionSide
-/// an enum for deciding if we will initate the uTP connection as a initial connecting or accepting
-/// a connection The way you will choose which one is dependent on the Portal Wire spec
-/// it will states where you are connecting or accepting and if the data being transferred is
-/// inbound or outbound
+/// An enum for deciding to initiate the uTP connection as connecting or accepting.
+/// The selection is specified in the Portal Wire spec, depending upon whether the
+/// data is being transferred inbound or outbound.
 enum UtpConnectionSide {
     Connect,
     Accept,
