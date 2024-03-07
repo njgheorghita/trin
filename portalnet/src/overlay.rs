@@ -33,7 +33,7 @@ use crate::{
         OverlayCommand, OverlayRequest, OverlayRequestError, OverlayService, RequestDirection,
     },
     types::node::Node,
-    utp_controller::{UtpConnectionSide, UtpController},
+    utp_controller::UtpController,
 };
 use ethportal_api::{
     types::{
@@ -546,7 +546,7 @@ where
             peer: UtpEnr(enr),
         };
         self.utp_controller
-            .inbound_stream(cid, UtpConnectionSide::Connect)
+            .connect_inbound_stream(cid)
             .await
             .map_err(|err| OverlayRequestError::ContentNotFound {
                 message: format!("Unable to locate content on the network: {err:?}"),

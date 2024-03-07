@@ -34,7 +34,7 @@ lazy_static! {
 /// a connection The way you will choose which one is dependent on the Portal Wire spec
 /// it will states where you are connecting or accepting and if the data being transferred is
 /// inbound or outbound
-pub enum UtpConnectionSide {
+enum UtpConnectionSide {
     Connect,
     Accept,
 }
@@ -53,7 +53,7 @@ impl UtpController {
         }
     }
 
-    pub async fn inbound_stream(
+    async fn inbound_stream(
         &self,
         cid: ConnectionId<UtpEnr>,
         side: UtpConnectionSide,
@@ -114,7 +114,7 @@ impl UtpController {
         Ok(data)
     }
 
-    pub async fn outbound_stream(
+    async fn outbound_stream(
         &self,
         cid: ConnectionId<UtpEnr>,
         data: Vec<u8>,
@@ -205,5 +205,29 @@ impl UtpController {
 
     pub fn cid(&self, peer: UtpEnr, is_initiator: bool) -> ConnectionId<UtpEnr> {
         self.utp_socket.cid(peer, is_initiator)
+    }
+
+    pub async fn connect_inbound_stream(
+        &self,
+        cid: ConnectionId<UtpEnr>,
+    ) -> anyhow::Result<Vec<u8>, OverlayRequestError> {
+        self.inbound_stream(cid, UtpConnectionSide::Connect).await
+    }
+
+    pub async fn accept_inbound_stream(
+        &self,
+        cid: ConnectionId<UtpEnr>,
+    ) -> anyhow::Result<Vec<u8>, OverlayRequestError> {
+        self.inbound_stream(cid, UtpConnectionSide::Accept).await
+    }
+
+    pub async fn connect_outbound_stream(&self, cid: ConnectionId<UtpEnr>, data: Vec<u8>) -> bool {
+        self.outbound_stream(cid, data, UtpConnectionSide::Connect)
+            .await
+    }
+
+    pub async fn accept_outbound_stream(&self, cid: ConnectionId<UtpEnr>, data: Vec<u8>) -> bool {
+        self.outbound_stream(cid, data, UtpConnectionSide::Accept)
+            .await
     }
 }

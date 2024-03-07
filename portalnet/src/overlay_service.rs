@@ -52,7 +52,7 @@ use crate::{
     gossip::propagate_gossip_cross_thread,
     types::node::Node,
     utils::portal_wire,
-    utp_controller::{UtpConnectionSide, UtpController},
+    utp_controller::UtpController,
 };
 use ethportal_api::{
     generate_random_node_id,
@@ -876,10 +876,7 @@ where
                                 send: connection_id.wrapping_add(1),
                                 peer: UtpEnr(source),
                             };
-                            let data = match utp_controller
-                                .inbound_stream(cid, UtpConnectionSide::Connect)
-                                .await
-                            {
+                            let data = match utp_controller.connect_inbound_stream(cid).await {
                                 Ok(data) => data,
                                 Err(e) => {
                                     if let Some(responder) = callback {
@@ -1161,8 +1158,7 @@ where
                     // over the uTP stream.
                     let utp = Arc::clone(&self.utp_controller);
                     tokio::spawn(async move {
-                        utp.outbound_stream(cid, content, UtpConnectionSide::Accept)
-                            .await;
+                        utp.accept_outbound_stream(cid, content).await;
                         drop(permit);
                     });
 
@@ -1311,10 +1307,7 @@ where
 
         let utp_controller = Arc::clone(&self.utp_controller);
         tokio::spawn(async move {
-            let data = match utp_controller
-                .inbound_stream(cid.clone(), UtpConnectionSide::Accept)
-                .await
-            {
+            let data = match utp_controller.accept_inbound_stream(cid.clone()).await {
                 Ok(data) => data,
                 Err(err) => {
                     debug!(%err, cid.send, cid.recv, peer = ?cid.peer.client(), content_keys = ?content_keys_string, "unable to complete uTP transfer");
@@ -1631,7 +1624,7 @@ where
                 }
             };
             let result = utp_controller
-                .outbound_stream(cid, content_payload.to_vec(), UtpConnectionSide::Connect)
+                .connect_outbound_stream(cid, content_payload.to_vec())
                 .await;
             if let Some(tx) = gossip_result_tx {
                 let _ = tx.send(result);
