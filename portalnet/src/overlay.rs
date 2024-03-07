@@ -546,7 +546,7 @@ where
             peer: UtpEnr(enr),
         };
         self.utp_controller
-            .inbound_stream(cid, UtpConnectionSide::Connect, None)
+            .inbound_stream(cid, UtpConnectionSide::Connect)
             .await
             .map_err(|err| OverlayRequestError::ContentNotFound {
                 message: format!("Unable to locate content on the network: {err:?}"),

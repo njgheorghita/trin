@@ -877,7 +877,7 @@ where
                                 peer: UtpEnr(source),
                             };
                             let data = match utp_controller
-                                .inbound_stream(cid, UtpConnectionSide::Connect, trace.clone())
+                                .inbound_stream(cid, UtpConnectionSide::Connect)
                                 .await
                             {
                                 Ok(data) => data,
@@ -1312,7 +1312,7 @@ where
         let utp_controller = Arc::clone(&self.utp_controller);
         tokio::spawn(async move {
             let data = match utp_controller
-                .inbound_stream(cid.clone(), UtpConnectionSide::Accept, None)
+                .inbound_stream(cid.clone(), UtpConnectionSide::Accept)
                 .await
             {
                 Ok(data) => data,

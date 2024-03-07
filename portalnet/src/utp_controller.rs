@@ -1,6 +1,4 @@
 use crate::{discovery::UtpEnr, overlay_service::OverlayRequestError};
-use anyhow::anyhow;
-use ethportal_api::types::query_trace::QueryTrace;
 use lazy_static::lazy_static;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -9,7 +7,7 @@ use trin_metrics::{
     labels::{UtpDirectionLabel, UtpOutcomeLabel},
     overlay::OverlayMetricsReporter,
 };
-use utp_rs::{cid::ConnectionId, conn::ConnectionConfig, socket::UtpSocket, stream::UtpStream};
+use utp_rs::{cid::ConnectionId, conn::ConnectionConfig, socket::UtpSocket};
 
 /// UtpController is meant to be a container which contains all code related to/for managing uTP
 /// streams We are implementing this because we want the utils of controlling uTP connection to be
@@ -31,6 +29,11 @@ lazy_static! {
     pub static ref UTP_CONN_CFG: ConnectionConfig = ConnectionConfig { max_packet_size: 1024, ..Default::default()};
 }
 
+/// UtpConnectionSide
+/// an enum for deciding if we will initate the uTP connection as a initial connecting or accepting
+/// a connection The way you will choose which one is dependent on the Portal Wire spec
+/// it will states where you are connecting or accepting and if the data being transferred is
+/// inbound or outbound
 pub enum UtpConnectionSide {
     Connect,
     Accept,
@@ -54,7 +57,6 @@ impl UtpController {
         &self,
         cid: ConnectionId<UtpEnr>,
         side: UtpConnectionSide,
-        trace: Option<QueryTrace>,
     ) -> anyhow::Result<Vec<u8>, OverlayRequestError> {
         // Wait for an incoming connection with the given CID. Then, read the data from the uTP
         // stream.
@@ -87,7 +89,7 @@ impl UtpController {
                         "Unable to locate content on the network: unable to {message}"
                     ),
                     utp: true,
-                    trace,
+                    trace: None,
                 });
             }
         };
@@ -102,7 +104,7 @@ impl UtpController {
                     "Unable to locate content on the network: error reading data from {message}"
                 ),
                 utp: true,
-                trace,
+                trace: None,
             });
         }
 
@@ -125,16 +127,16 @@ impl UtpController {
                 self.utp_socket
                     .connect_with_cid(cid.clone(), *UTP_CONN_CFG)
                     .await,
-                "connect outbound uTP stream",
+                "outbound connect with cid",
             ),
             UtpConnectionSide::Accept => (
                 self.utp_socket
                     .accept_with_cid(cid.clone(), *UTP_CONN_CFG)
                     .await,
-                "accept outbound uTP stream",
+                "outbound accept with cid",
             ),
         };
-        let stream = match stream {
+        let mut stream = match stream {
             Ok(stream) => stream,
             Err(err) => {
                 self.metrics.report_utp_outcome(
@@ -152,55 +154,53 @@ impl UtpController {
             }
         };
 
-        // send_utp_content handles metrics reporting of successful & failed txs
-        match Self::send_utp_content(stream, &data, self.metrics.clone()).await {
-            Ok(_) => true,
+        match stream.write(&data).await {
+            Ok(write_size) => {
+                if write_size != data.len() {
+                    self.metrics.report_utp_outcome(
+                        UtpDirectionLabel::Outbound,
+                        UtpOutcomeLabel::FailedDataTx,
+                    );
+                    debug!(
+                        %cid.send,
+                        %cid.recv,
+                        peer = ?cid.peer.client(),
+                        "Error sending content over uTP, in response to uTP write exited before sending all content: {write_size} bytes written, {} bytes expected",
+                        data.len()
+                    );
+                    return false;
+                }
+            }
             Err(err) => {
+                self.metrics
+                    .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::FailedDataTx);
                 debug!(
                     %err,
                     %cid.send,
                     %cid.recv,
                     peer = ?cid.peer.client(),
-                    "Error sending content over uTP, in response to {message}"
+                    "Error sending content over uTP, in response to Error writing content to uTP stream: {err}"
                 );
-                false
-            }
-        }
-    }
-
-    async fn send_utp_content(
-        mut stream: UtpStream<UtpEnr>,
-        content: &[u8],
-        metrics: OverlayMetricsReporter,
-    ) -> anyhow::Result<()> {
-        match stream.write(content).await {
-            Ok(write_size) => {
-                if write_size != content.len() {
-                    metrics.report_utp_outcome(
-                        UtpDirectionLabel::Outbound,
-                        UtpOutcomeLabel::FailedDataTx,
-                    );
-                    return Err(anyhow!(
-                        "uTP write exited before sending all content: {write_size} bytes written, {} bytes expected",
-                        content.len()
-                    ));
-                }
-            }
-            Err(err) => {
-                metrics
-                    .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::FailedDataTx);
-                return Err(anyhow!("Error writing content to uTP stream: {err}"));
+                return false;
             }
         }
 
         // close uTP connection
         if let Err(err) = stream.close().await {
-            metrics
+            self.metrics
                 .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::FailedShutdown);
-            return Err(anyhow!("Error closing uTP connection: {err}"));
+            debug!(
+                %err,
+                %cid.send,
+                %cid.recv,
+                peer = ?cid.peer.client(),
+                "Error sending content over uTP, in response to Error closing uTP connection: {err}"
+            );
+            return false;
         };
-        metrics.report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::Success);
-        Ok(())
+        self.metrics
+            .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::Success);
+        true
     }
 
     pub fn cid(&self, peer: UtpEnr, is_initiator: bool) -> ConnectionId<UtpEnr> {
