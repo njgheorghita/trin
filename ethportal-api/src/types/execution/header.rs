@@ -11,10 +11,6 @@ use crate::{
     utils::bytes::{hex_decode, hex_encode},
 };
 
-const LONDON_BLOCK_NUMBER: u64 = 12965000;
-const SHANGHAI_BLOCK_NUMBER: u64 = 17034871;
-const DENCUN_BLOCK_NUMBER: u64 = 19426589; // double-check
-
 /// A block header.
 #[derive(Debug, Clone, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +59,14 @@ pub struct Header {
     pub blob_gas_used: Option<U64>,
     /// Excess blob gas. Introduced by EIP-4844
     pub excess_blob_gas: Option<U64>,
+    /// The hash of the parent beacon block's root is included in execution blocks, as proposed by
+    /// EIP-4788.
+    ///
+    /// This enables trust-minimized access to consensus state, supporting staking pools, bridges,
+    /// and more.
+    ///
+    /// The beacon roots contract handles root storage, enhancing Ethereum's functionalities.
+    pub parent_beacon_block_root: Option<H256>,
 }
 
 fn se_hex<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
@@ -98,7 +102,9 @@ impl Header {
 
     /// Append header to RLP stream `s`, optionally `with_seal`.
     fn stream_rlp(&self, s: &mut RlpStream, with_seal: bool) {
-        let stream_length_without_seal = if self.excess_blob_gas.is_some() {
+        let stream_length_without_seal = if self.parent_beacon_block_root.is_some() {
+            18
+        } else if self.excess_blob_gas.is_some() {
             // add two for excess_blob_gas and blob_gas_used
             17
         } else if self.withdrawals_root.is_some() {
@@ -149,6 +155,10 @@ impl Header {
         if let Some(val) = self.excess_blob_gas {
             s.append(&val);
         }
+
+        if let Some(val) = self.parent_beacon_block_root {
+            s.append(&val);
+        }
     }
 }
 
@@ -175,19 +185,27 @@ impl Decodable for Header {
             withdrawals_root: None,
             blob_gas_used: None,
             excess_blob_gas: None,
+            parent_beacon_block_root: None,
         };
 
-        if header.number >= LONDON_BLOCK_NUMBER {
+        if rlp.at(15).is_ok() {
             header.base_fee_per_gas = Some(rlp.val_at(15)?);
         }
 
-        if header.number >= SHANGHAI_BLOCK_NUMBER {
+        if rlp.at(16).is_ok() {
             header.withdrawals_root = Some(rlp.val_at(16)?);
         }
 
-        if header.number >= DENCUN_BLOCK_NUMBER {
+        if rlp.at(17).is_ok() {
             header.blob_gas_used = Some(rlp.val_at(17)?);
+        }
+
+        if rlp.at(18).is_ok() {
             header.excess_blob_gas = Some(rlp.val_at(18)?);
+        }
+
+        if rlp.at(19).is_ok() {
+            header.parent_beacon_block_root = Some(rlp.val_at(19)?);
         }
 
         Ok(header)
@@ -221,6 +239,7 @@ impl PartialEq for Header {
             && self.withdrawals_root == other.withdrawals_root
             && self.blob_gas_used == other.blob_gas_used
             && self.excess_blob_gas == other.excess_blob_gas
+            && self.parent_beacon_block_root == other.parent_beacon_block_root
     }
 }
 
@@ -251,6 +270,7 @@ impl From<Header> for RpcHeader {
             withdrawals_root,
             blob_gas_used,
             excess_blob_gas,
+            parent_beacon_block_root,
         } = header;
 
         Self {
@@ -282,7 +302,8 @@ impl From<Header> for RpcHeader {
             blob_gas_used,
             excess_blob_gas,
             hash,
-            parent_beacon_block_root: None,
+            parent_beacon_block_root: parent_beacon_block_root
+                .map(|h264| h264.as_fixed_bytes().into()),
         }
     }
 }
@@ -471,7 +492,7 @@ impl ssz::Encode for SszNone {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{fs, str::FromStr};
 
     use serde_json::{json, Value};
     use ssz::Decode;
@@ -610,19 +631,70 @@ mod tests {
         assert_eq!(encoded, re_encoded);
     }
 
+    // Test vector from: https://github.com/ethereum/tests/blob/7e9e0940c0fcdbead8af3078ede70f969109bd85/BlockchainTests/ValidBlocks/bcExample/cancunExample.json
+    #[test]
+    fn dencun_rlp_ethereum_tests_example() {
+        let data = hex_decode("0xf90221a03a9b485972e7353edd9152712492f0c58d89ef80623686b6bf947a4a6dce6cb6a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942adc25665018aa1fe0e6bc666dac8fc2697ff9baa03c837fc158e3e93eafcaf2e658a02f5d8f99abc9f1c4c66cdea96c0ca26406aea04409cc4b699384ba5f8248d92b784713610c5ff9c1de51e9239da0dac76de9cea046cab26abf1047b5b119ecc2dda1296b071766c8b1307e1381fcecc90d513d86b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008001887fffffffffffffff8302a86582079e42a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b42188000000000000000009a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b4218302000080").unwrap();
+        let decoded: Header = rlp::decode(&data).unwrap();
+        let expected: Header = Header {
+            parent_hash: H256::from_str(
+                "3a9b485972e7353edd9152712492f0c58d89ef80623686b6bf947a4a6dce6cb6",
+            )
+            .unwrap(),
+            uncles_hash: H256::from_str(
+                "1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+            )
+            .unwrap(),
+            author: H160::from_str("2adc25665018aa1fe0e6bc666dac8fc2697ff9ba").unwrap(),
+            state_root: H256::from_str(
+                "3c837fc158e3e93eafcaf2e658a02f5d8f99abc9f1c4c66cdea96c0ca26406ae",
+            )
+            .unwrap(),
+            transactions_root: H256::from_str(
+                "4409cc4b699384ba5f8248d92b784713610c5ff9c1de51e9239da0dac76de9ce",
+            )
+            .unwrap(),
+            receipts_root: H256::from_str(
+                "46cab26abf1047b5b119ecc2dda1296b071766c8b1307e1381fcecc90d513d86",
+            )
+            .unwrap(),
+            logs_bloom: Bloom::default(),
+            difficulty: U256::from_str("0").unwrap(),
+            number: 0x1,
+            gas_limit: U256::from_str("0x7fffffffffffffff").unwrap(),
+            gas_used: U256::from_str("0x02a865").unwrap(),
+            timestamp: 0x079e,
+            extra_data: vec![0x42],
+            mix_hash: Some(
+                H256::from_str("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+                    .unwrap(),
+            ),
+            nonce: Some(H64::zero()),
+            base_fee_per_gas: Some(U256::from_str("9").unwrap()),
+            withdrawals_root: Some(
+                H256::from_str("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+                    .unwrap(),
+            ),
+            blob_gas_used: Some(U64::from_str("020000").unwrap()),
+            excess_blob_gas: Some(U64::from_str("0").unwrap()),
+            parent_beacon_block_root: None,
+        };
+        assert_eq!(decoded, expected);
+
+        let expected_hash =
+            H256::from_str("0x10aca3ebb4cf6ddd9e945a5db19385f9c105ede7374380c50d56384c3d233785")
+                .unwrap();
+        assert_eq!(decoded.hash(), expected_hash);
+    }
+
     #[test]
     fn post_dencun_header_without_blob_txs() {
         let body =
             std::fs::read_to_string("../test_assets/mainnet/block_19433902_value.json").unwrap();
         let response: Value = serde_json::from_str(&body).unwrap();
         let header: Header = serde_json::from_value(response["result"].clone()).unwrap();
-        let etherscan_hash = H256::from_slice(
-            &hex_decode("0x8ec7bd37afa247fde16aa96317c77055b7a633aa8dc9ae27d0d5c776b58fef04")
-                .unwrap(),
-        );
         let expected_hash =
             H256::from_slice(&hex_decode(response["result"]["hash"].as_str().unwrap()).unwrap());
-        assert_eq!(etherscan_hash, expected_hash);
         assert_eq!(header.number, 19433902);
         assert_eq!(header.hash(), expected_hash);
     }
@@ -633,13 +705,8 @@ mod tests {
             std::fs::read_to_string("../test_assets/mainnet/block_19433903_value.json").unwrap();
         let response: Value = serde_json::from_str(&body).unwrap();
         let header: Header = serde_json::from_value(response["result"].clone()).unwrap();
-        let etherscan_hash = H256::from_slice(
-            &hex_decode("0xb39d99cc81a35570c4d5765d9273cb282e424324cd5aae059cc00de7d59afb69")
-                .unwrap(),
-        );
         let expected_hash =
             H256::from_slice(&hex_decode(response["result"]["hash"].as_str().unwrap()).unwrap());
-        assert_eq!(etherscan_hash, expected_hash);
         assert_eq!(header.number, 19433903);
         assert_eq!(header.hash(), expected_hash);
     }
