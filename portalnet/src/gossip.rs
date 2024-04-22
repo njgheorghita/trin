@@ -42,7 +42,7 @@ pub struct GossipResult {
 
 /// Propagate gossip in a way that can be used across threads, without &self.
 /// Doesn't trace gossip results
-pub fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
+pub async fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
     content: Vec<(TContentKey, Vec<u8>)>,
     kbuckets: Arc<RwLock<KBucketsTable<NodeId, Node>>>,
     command_tx: mpsc::UnboundedSender<OverlayCommand<TContentKey>>,
@@ -71,6 +71,15 @@ pub fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
     let mut enrs_and_content: HashMap<String, Vec<(RawContentKey, Vec<u8>)>> = HashMap::new();
 
     for (content_key, content_value) in content {
+        let (tx, rx) = oneshot::channel();
+        let target = discv5::enr::NodeId::from(content_key.content_id());
+        let _ = command_tx.send(OverlayCommand::FindNodeQuery {
+            target,
+            callback: tx,
+        }).unwrap();
+        let response = rx.await.unwrap_or_else(|_| vec![]);
+        let all_nodes: Vec<Enr> = all_nodes.iter().map(|node| node.value.enr()).collect();
+        let all_nodes = all_nodes.into_iter().chain(response.into_iter()).collect::<Vec<Enr>>();
         let interested_enrs = calculate_interested_enrs(&content_key, &all_nodes);
 
         // Temporarily store all randomly selected nodes with the content of interest.
@@ -211,7 +220,8 @@ pub async fn trace_propagate_gossip_cross_thread<TContentKey: OverlayContentKey>
 /// Filter all nodes from overlay routing table where XOR_distance(content_id, nodeId) < node radius
 fn calculate_interested_enrs<TContentKey: OverlayContentKey>(
     content_key: &TContentKey,
-    all_nodes: &[&kbucket::Node<NodeId, Node>],
+    //all_nodes: &[&kbucket::Node<NodeId, Node>],
+    all_nodes: &Vec<Enr>,
 ) -> Vec<Enr> {
     // HashMap to temporarily store all interested ENRs and the content.
     // Key is base64 string of node's ENR.
