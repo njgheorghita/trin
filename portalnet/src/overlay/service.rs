@@ -1138,7 +1138,7 @@ where
                                 // fallback peers on an error.
                                 let _ = Self::fallback_find_content(
                                     content_key.clone(),
-                                    utp_processing,
+                                    utp_processing.clone(),
                                 )
                                 .await;
                             })
@@ -1163,7 +1163,7 @@ where
                                 tokio::spawn(async move {
                                     let _ = Self::fallback_find_content(
                                         content_key.clone(),
-                                        utp_processing,
+                                        utp_processing.clone(),
                                     )
                                     .await;
                                 })
@@ -1195,7 +1195,8 @@ where
                             None => {
                                 // Spawn a fallback FINDCONTENT task for each content key
                                 // that failed individual processing.
-                                let _ = Self::fallback_find_content(key, utp_processing).await;
+                                let _ =
+                                    Self::fallback_find_content(key, utp_processing.clone()).await;
                                 None
                             }
                         }
@@ -1222,7 +1223,8 @@ where
                     })
                 })
                 .collect::<Vec<_>>();
-            let _ = Self::propagate_validated_content(validated_content, utp_processing).await;
+            let _ =
+                Self::propagate_validated_content(validated_content, utp_processing.clone()).await;
             // explicitly drop semaphore permit in thread so the permit is moved into the thread
             drop(permit);
         });
@@ -1557,10 +1559,11 @@ where
         debug!(ids = ?ids_to_propagate, "propagating validated content");
         propagate_gossip_cross_thread(
             content_to_propagate,
-            utp_processing.kbuckets,
+            utp_processing.kbuckets.clone(),
             utp_processing.command_tx.clone(),
             Some(utp_processing.utp_controller),
-        );
+        )
+        .await;
         Ok(())
     }
 
