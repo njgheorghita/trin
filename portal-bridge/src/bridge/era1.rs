@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use alloy_primitives::B256;
 use anyhow::{anyhow, ensure};
 use futures::future::join_all;
 use rand::{seq::SliceRandom, thread_rng};
@@ -18,7 +19,7 @@ use tracing::{debug, error, info, warn};
 use trin_metrics::bridge::BridgeMetricsReporter;
 
 use crate::{
-    api::execution::construct_proof,
+    api::execution::{construct_proof, ExecutionApi},
     bridge::{
         history::{HEADER_SATURATION_DELAY, SERVE_BLOCK_TIMEOUT},
         utils::lookup_epoch_acc,
@@ -31,12 +32,13 @@ use crate::{
     },
 };
 use ethportal_api::{
-    jsonrpsee::http_client::HttpClient, types::execution::accumulator::EpochAccumulator,
+    jsonrpsee::http_client::HttpClient,
+    types::{execution::accumulator::EpochAccumulator, history::ContentInfo},
     BlockBodyKey, BlockHeaderKey, BlockReceiptsKey, EpochAccumulatorKey, HistoryContentKey,
-    HistoryContentValue,
+    HistoryContentValue, HistoryNetworkApiClient,
 };
 use trin_validation::{
-    constants::EPOCH_SIZE, header_validfator::HeaderValidator, oracle::HeaderOracle,
+    constants::EPOCH_SIZE, header_validator::HeaderValidator, oracle::HeaderOracle,
 };
 
 const ERA1_DIR_URL: &str = "https://era1.ethportal.net/";
@@ -51,6 +53,7 @@ pub struct Era1Bridge {
     pub http_client: Client,
     pub metrics: BridgeMetricsReporter,
     pub gossip_limit: usize,
+    pub execution_api: ExecutionApi,
 }
 
 // todo: validate via checksum, so we don't have to validate content on a per-value basis
@@ -61,6 +64,7 @@ impl Era1Bridge {
         header_oracle: HeaderOracle,
         epoch_acc_path: PathBuf,
         gossip_limit: usize,
+        execution_api: ExecutionApi,
     ) -> anyhow::Result<Self> {
         let http_client: Client = Config::new()
             .add_header("Content-Type", "application/xml")
@@ -77,6 +81,7 @@ impl Era1Bridge {
             http_client,
             metrics,
             gossip_limit,
+            execution_api,
         })
     }
 
@@ -84,6 +89,11 @@ impl Era1Bridge {
         info!("Launching era1 bridge: {:?}", self.mode);
         match self.mode.clone() {
             BridgeMode::FourFours(FourFoursMode::Random) => self.launch_random().await,
+            BridgeMode::FourFours(FourFoursMode::Hunter(sample_size, threshold)) => {
+                if let Err(err) = self.launch_hunter(sample_size, threshold).await {
+                    error!("Failed to run hunter mode: {err}");
+                }
+            }
             BridgeMode::FourFours(FourFoursMode::RandomSingle) => {
                 self.launch_random_single(None).await
             }
@@ -103,6 +113,68 @@ impl Era1Bridge {
         for era1_path in self.era1_files.clone().into_iter() {
             self.gossip_era1(era1_path, None).await;
         }
+    }
+
+    async fn launch_hunter(&self, sample_size: u64, threshold: u64) -> anyhow::Result<()> {
+        info!("Launching hunter mode with sample size: {sample_size} and threshold: {threshold}");
+        let era1_files = self.era1_files.clone().into_iter();
+        for era1_path in era1_files {
+            let epoch = get_epoch_from_era1_path(&era1_path)?;
+            info!("Hunting for missing content inside epoch: {epoch}");
+            let block_range = (epoch * EPOCH_SIZE as u64)..((epoch + 1) * EPOCH_SIZE as u64);
+            let blocks_to_sample = block_range.clone().collect::<Vec<u64>>();
+            let blocks_to_sample =
+                blocks_to_sample.choose_multiple(&mut thread_rng(), sample_size as usize);
+            let mut hashes_to_sample: Vec<B256> = vec![];
+            for block_number in blocks_to_sample {
+                let block_hash = self
+                    .execution_api
+                    .get_block_hash(*block_number)
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("unable to get block hash for block number: {block_number}")
+                    });
+                hashes_to_sample.push(block_hash);
+            }
+            let content_keys_to_sample = hashes_to_sample
+                .iter()
+                .map(|hash| {
+                    (
+                        HistoryContentKey::BlockHeaderWithProof(BlockHeaderKey {
+                            block_hash: hash.0,
+                        }),
+                        HistoryContentKey::BlockBody(BlockBodyKey { block_hash: hash.0 }),
+                        HistoryContentKey::BlockReceipts(BlockReceiptsKey { block_hash: hash.0 }),
+                    )
+                })
+                .collect::<Vec<(HistoryContentKey, HistoryContentKey, HistoryContentKey)>>();
+            let content_keys_to_sample: Vec<HistoryContentKey> = content_keys_to_sample
+                .iter()
+                .flat_map(|(header_key, body_key, receipts_key)| {
+                    vec![header_key.clone(), body_key.clone(), receipts_key.clone()]
+                })
+                .collect();
+            let mut found = 0;
+            let hunter_threshold = (content_keys_to_sample.len() as u64 * threshold / 100) as usize;
+            for content_key in content_keys_to_sample {
+                let result = self
+                    .portal_client
+                    .recursive_find_content(content_key.clone())
+                    .await;
+                if let Ok(ContentInfo::Content { .. }) = result {
+                    found += 1;
+                    if found == hunter_threshold {
+                        info!("Hunter found enough content ({hunter_threshold}) to stop hunting in epoch {epoch}");
+                        break;
+                    }
+                }
+            }
+            if found < hunter_threshold {
+                info!("Hunter failed to find enough content ({hunter_threshold}) in epoch {epoch}, launching epoch gossip.");
+                self.gossip_era1(era1_path, None).await;
+            }
+        }
+        Ok(())
     }
 
     async fn launch_single(&self, epoch: u64) {
