@@ -144,7 +144,8 @@ impl Era1Bridge {
                 .collect::<Vec<(HistoryContentKey, HistoryContentKey, HistoryContentKey)>>()
                 .iter()
                 .flat_map(|(header_key, body_key, receipts_key)| {
-                    vec![header_key.clone(), body_key.clone(), receipts_key.clone()]
+                    //vec![header_key.clone(), body_key.clone(), receipts_key.clone()]
+                    vec![header_key.clone()]
                 })
                 .collect::<Vec<HistoryContentKey>>();
             let mut found = 0;
@@ -408,96 +409,96 @@ impl Era1Bridge {
             metrics.stop_process_timer(timer);
             // Sleep for 10 seconds to allow headers to saturate network,
             // since they must be available for body / receipt validation.
-            sleep(Duration::from_secs(HEADER_SATURATION_DELAY)).await;
+            //sleep(Duration::from_secs(HEADER_SATURATION_DELAY)).await;
         }
-        let mut gossip_body = true;
-        if hunt {
-            let body_hash = block_tuple.header.header.hash();
-            let body_key = BlockBodyKey {
-                block_hash: body_hash.0,
-            };
-            let body_content_key = HistoryContentKey::BlockBody(body_key);
-            let body_content_info = portal_client
-                .recursive_find_content(body_content_key.clone())
-                .await;
-            if let Ok(ContentInfo::Content { .. }) = body_content_info {
-                info!(
-                    "Skipping body at height: {} as body already found",
-                    block_tuple.header.header.number
-                );
-                gossip_body = false;
-            }
-        }
-        if gossip_body {
-            let timer = metrics.start_process_timer("construct_and_gossip_block_body");
-            match Self::construct_and_gossip_block_body(
-                portal_client.clone(),
-                block_tuple.clone(),
-                block_stats.clone(),
-            )
-            .await
-            {
-                Ok(_) => {
-                    metrics.report_gossip_success(true, "block_body");
-                    info!(
-                        "Successfully served block body at height: {:?}",
-                        block_tuple.header.header.number
-                    )
-                }
-                Err(msg) => {
-                    metrics.report_gossip_success(false, "block_body");
-                    warn!(
-                        "Error serving block body at height: {:?} - {:?}",
-                        block_tuple.header.header.number, msg
-                    )
-                }
-            }
-            metrics.stop_process_timer(timer);
-        }
-        let mut gossip_receipts = true;
-        if hunt {
-            let receipts_hash = block_tuple.header.header.hash();
-            let receipts_key = BlockReceiptsKey {
-                block_hash: receipts_hash.0,
-            };
-            let receipts_content_key = HistoryContentKey::BlockReceipts(receipts_key);
-            let receipts_content_info = portal_client
-                .recursive_find_content(receipts_content_key.clone())
-                .await;
-            if let Ok(ContentInfo::Content { .. }) = receipts_content_info {
-                info!(
-                    "Skipping receipts at height: {} as receipts already found",
-                    block_tuple.header.header.number
-                );
-                gossip_receipts = false;
-            }
-        };
-        if gossip_receipts {
-            let timer = metrics.start_process_timer("construct_and_gossip_receipts");
-            match Self::construct_and_gossip_receipts(
-                portal_client.clone(),
-                block_tuple.clone(),
-                block_stats.clone(),
-            )
-            .await
-            {
-                Ok(_) => {
-                    metrics.report_gossip_success(true, "receipt");
-                    info!(
-                        "Successfully served block receipts at height: {:?}",
-                        block_tuple.header.header.number
-                    )
-                }
-                Err(msg) => {
-                    metrics.report_gossip_success(false, "receipt");
-                    warn!(
-                        "Error serving block receipts at height: {:?} - {:?}",
-                        block_tuple.header.header.number, msg
-                    )
-                }
-            }
-            metrics.stop_process_timer(timer);
-        }
+        //let mut gossip_body = true;
+        //if hunt {
+            //let body_hash = block_tuple.header.header.hash();
+            //let body_key = BlockBodyKey {
+                //block_hash: body_hash.0,
+            //};
+            //let body_content_key = HistoryContentKey::BlockBody(body_key);
+            //let body_content_info = portal_client
+                //.recursive_find_content(body_content_key.clone())
+                //.await;
+            //if let Ok(ContentInfo::Content { .. }) = body_content_info {
+                //info!(
+                    //"Skipping body at height: {} as body already found",
+                    //block_tuple.header.header.number
+                //);
+                //gossip_body = false;
+            //}
+        //}
+        //if gossip_body {
+            //let timer = metrics.start_process_timer("construct_and_gossip_block_body");
+            //match Self::construct_and_gossip_block_body(
+                //portal_client.clone(),
+                //block_tuple.clone(),
+                //block_stats.clone(),
+            //)
+            //.await
+            //{
+                //Ok(_) => {
+                    //metrics.report_gossip_success(true, "block_body");
+                    //info!(
+                        //"Successfully served block body at height: {:?}",
+                        //block_tuple.header.header.number
+                    //)
+                //}
+                //Err(msg) => {
+                    //metrics.report_gossip_success(false, "block_body");
+                    //warn!(
+                        //"Error serving block body at height: {:?} - {:?}",
+                        //block_tuple.header.header.number, msg
+                    //)
+                //}
+            //}
+            //metrics.stop_process_timer(timer);
+        //}
+        //let mut gossip_receipts = true;
+        //if hunt {
+            //let receipts_hash = block_tuple.header.header.hash();
+            //let receipts_key = BlockReceiptsKey {
+                //block_hash: receipts_hash.0,
+            //};
+            //let receipts_content_key = HistoryContentKey::BlockReceipts(receipts_key);
+            //let receipts_content_info = portal_client
+                //.recursive_find_content(receipts_content_key.clone())
+                //.await;
+            //if let Ok(ContentInfo::Content { .. }) = receipts_content_info {
+                //info!(
+                    //"Skipping receipts at height: {} as receipts already found",
+                    //block_tuple.header.header.number
+                //);
+                //gossip_receipts = false;
+            //}
+        //};
+        //if gossip_receipts {
+            //let timer = metrics.start_process_timer("construct_and_gossip_receipts");
+            //match Self::construct_and_gossip_receipts(
+                //portal_client.clone(),
+                //block_tuple.clone(),
+                //block_stats.clone(),
+            //)
+            //.await
+            //{
+                //Ok(_) => {
+                    //metrics.report_gossip_success(true, "receipt");
+                    //info!(
+                        //"Successfully served block receipts at height: {:?}",
+                        //block_tuple.header.header.number
+                    //)
+                //}
+                //Err(msg) => {
+                    //metrics.report_gossip_success(false, "receipt");
+                    //warn!(
+                        //"Error serving block receipts at height: {:?} - {:?}",
+                        //block_tuple.header.header.number, msg
+                    //)
+                //}
+            //}
+            //metrics.stop_process_timer(timer);
+        //}
         Ok(())
     }
 
