@@ -155,37 +155,58 @@ impl PreMergeAccumulator {
         }
 
         // Create a merkle tree from epoch accumulator.
-        // To construct a valid proof for the header hash, we add both the hash and the total
-        // difficulty as individual leaves for each header record. This will ensure that the
-        // total difficulty is included as the first element in the proof.
+        // To construct a valid proof for the header hash, we add a leaf of
+        // hash(header, total difficulty) for each header record at a depth of 13.
+        // This must be done to support generating valid proofs for partial
+        // epochs, as opposed to adding the header and total difficulty as individual
+        // leaves on a tree of depth 14.
+        // 
+        // Then we re-insert the total difficulty as the first element
+        // in the proof to be able to prove the header hash.
         let mut leaves = vec![];
+        let mut header_difficulty = B256::ZERO;
+        // hash of the header record, used for validation later
+        let mut header_record_hash = B256::ZERO;
         // iterate over every header record in the epoch acc
-        for record in epoch_acc.into_iter() {
-            // add the block hash as a leaf
-            leaves.push(record.block_hash);
+        for (index, record) in epoch_acc.into_iter().enumerate() {
             // convert total difficulty to B256
-            let leaf = B256::from_slice(record.total_difficulty.as_le_slice());
-            // add the total difficulty as a leaf
-            leaves.push(leaf);
+            let current_difficulty = B256::from_slice(record.total_difficulty.as_le_slice());
+            // hash the header hash and total difficulty
+            let hash = B256::from_slice(&eth2_hashing::hash32_concat(
+                record.block_hash.as_slice(),
+                current_difficulty.as_slice(),
+            ));
+            // set the header difficulty & header record hash if the
+            // index matches the header record index
+            if index == hr_index {
+                header_difficulty = current_difficulty;
+                header_record_hash = hash;
+            }
+            // add the hash(header, total_difficulty) as a leaf
+            leaves.push(hash);
         }
         // Create the merkle tree from leaves
-        let merkle_tree = MerkleTree::create(&leaves, 14);
-
-        // Multiply hr_index by 2 b/c we're now using a depth of 14 rather than the original 13
-        let hr_index = hr_index * 2;
+        let merkle_tree = MerkleTree::create(&leaves, 13);
 
         // Generating the proof for the value at hr_index (leaf)
         let (leaf, mut proof) = merkle_tree
-            .generate_proof(hr_index, 14)
+            .generate_proof(hr_index, 13)
             .map_err(|err| anyhow!("Unable to generate proof for given index: {err:?}"))?;
-        // Validate that the value the proof is for (leaf) is the header hash
-        assert_eq!(leaf, header.hash());
+
+        // Validate that the value the proof is for (leaf) == hash(header, total_difficulty)
+        assert_eq!(leaf, header_record_hash);
+
+        // Re-insert the total difficulty as the first element in the proof
+        proof.insert(0, header_difficulty);
 
         // Add the be encoded EPOCH_SIZE to proof to comply with ssz merkleization spec
         // https://github.com/ethereum/consensus-specs/blob/dev/ssz/merkle-proofs.md#ssz-object-to-index
-        proof.push(B256::from_slice(&hex_decode(
-            "0x0020000000000000000000000000000000000000000000000000000000000000",
-        )?));
+        let epoch_size: i32 = epoch_acc.len() as i32;
+        let mut epoch_size_bytes = [0u8; 32];
+        epoch_size_bytes[..4].copy_from_slice(&epoch_size.to_le_bytes());
+        let epoch_size = B256::from_slice(&epoch_size_bytes);
+        proof.push(epoch_size);
+
         let final_proof: [B256; 15] = proof
             .try_into()
             .map_err(|_| anyhow!("Invalid proof length."))?;
