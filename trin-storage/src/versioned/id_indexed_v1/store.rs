@@ -414,8 +414,10 @@ impl IdIndexedV1Store {
     fn set_radius_to_farthest(&mut self) -> Result<(), ContentStoreError> {
         match self.lookup_farthest()? {
             None => {
-                error!(Db = %self.config.content_type, "Farthest not found!");
-                self.radius = Distance::MAX;
+                if self.config.storage_capacity_bytes > 0 {
+                    error!(Db = %self.config.content_type, "Farthest not found!");
+                    self.radius = Distance::MAX;
+                }
             }
             Some(farthest) => {
                 self.radius = self.distance_to_content_id(&farthest.content_id);

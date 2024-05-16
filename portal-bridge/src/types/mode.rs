@@ -1,5 +1,6 @@
 use std::{ops::Range, path::PathBuf, str::FromStr};
 
+use alloy_primitives::{hex::FromHex, B256};
 use anyhow::anyhow;
 
 use trin_validation::constants::EPOCH_SIZE;
@@ -178,6 +179,8 @@ pub enum FourFoursMode {
     // Hunter mode tries to efficiently find missing data, by sampling a given number of blocks
     // (sample_size, threshold)
     Hunter(u64, u64),
+    // blxxx
+    BlockHash(B256),
 }
 
 const RANDOM_SINGLE_MODE: &str = "random_epoch";
@@ -202,6 +205,9 @@ impl FromStr for FourFoursMode {
                 .parse()
                 .expect("Invalid 4444s bridge hunter mode arg: invalid threshold");
             return Ok(FourFoursMode::Hunter(sample_size, threshold));
+        }
+        if let Ok(hash) = B256::from_hex(s) {
+            return Ok(FourFoursMode::BlockHash(hash));
         }
         if s.starts_with(RANDOM_SINGLE_MODE) {
             match s.split(':').nth(1) {

@@ -251,6 +251,25 @@ impl ExecutionApi {
         Ok(B256::from_slice(&hash))
     }
 
+    pub async fn get_block_number(&self, block_hash: B256) -> anyhow::Result<u64> {
+        let block_hash = hex_encode(&block_hash);
+        let params = Params::Array(vec![json!(block_hash), json!(false)]);
+        let method = "eth_getBlockByHash".to_string();
+        let request = JsonRequest::new(method, params, 1);
+        let response = self.try_request(request).await?;
+        let result = response
+            .get("result")
+            .ok_or_else(|| anyhow!("Unable to fetch block number result for block: {block_hash:?}"))?;
+        let number = result
+            .get("number")
+            .ok_or_else(|| anyhow!("Unable to fetch block number for block: {block_hash:?}"))?;
+        let number = number
+            .as_str()
+            .ok_or_else(|| anyhow!("Unable to decode block number"))?;
+        let number = u64::from_str_radix(&number[2..], 16)?;
+        Ok(number)
+    }
+
     pub async fn get_latest_block_number(&self) -> anyhow::Result<u64> {
         let params = Params::Array(vec![json!("latest"), json!(false)]);
         let method = "eth_getBlockByNumber".to_string();

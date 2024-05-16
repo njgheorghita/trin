@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::Range,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -88,6 +89,7 @@ impl Era1Bridge {
     pub async fn launch(&self) {
         info!("Launching era1 bridge: {:?}", self.mode);
         match self.mode.clone() {
+            BridgeMode::FourFours(FourFoursMode::BlockHash(block_hash)) => self.launch_single_block(block_hash).await,
             BridgeMode::FourFours(FourFoursMode::Random) => self.launch_random().await,
             BridgeMode::FourFours(FourFoursMode::Hunter(sample_size, threshold)) => {
                 if let Err(err) = self.launch_hunter(sample_size, threshold).await {
@@ -113,6 +115,84 @@ impl Era1Bridge {
         for era1_path in self.era1_files.clone().into_iter() {
             self.gossip_era1(era1_path, None, false).await;
         }
+    }
+
+    async fn launch_single_block(&self, block_hash: B256) {
+        let content_keys_file = "flex_tape.txt";
+        let content_keys = std::fs::read_to_string(content_keys_file)
+            .expect("to be able to read content keys file");
+        let mut content_keys = content_keys
+            .lines()
+            .map(|line| {
+                let line = line.trim();
+                let key = ethportal_api::utils::bytes::hex_decode(line).expect("to be able to decode key");
+                B256::from_slice(&key)
+            })
+            .collect::<Vec<B256>>();
+        // filter out all duplicates
+        content_keys.sort();
+        content_keys.dedup();
+        let mut data = vec![];
+        for key in &content_keys {
+            info!("getting block number for key #{}/{}", data.len(), content_keys.len());
+            let block_number = self
+                .execution_api
+                .get_block_number(*key)
+                .await
+                .expect("to be able to get block number");
+            data.push(block_number);
+        }
+        let mut final_data = HashMap::new();
+        for block_number in data {
+            let epoch_index = block_number / EPOCH_SIZE;
+            final_data.entry(epoch_index).or_insert(vec![]).push(block_number);
+        }
+        for (epoch_index, block_data) in final_data.into_iter() {
+            info!("processing epoch: {epoch_index} with {} blocks", block_data.len());
+            let era1_path = self
+                .era1_files
+                .clone()
+                .into_iter()
+                .find(|file| file.contains(&format!("mainnet-{epoch_index:05}-")))
+                .expect("to be able to find era1 file");
+            let epoch_acc = self.get_epoch_acc(epoch_index).await.unwrap();
+            let header_validator = Arc::new(self.header_oracle.header_validator.clone());
+            let era1_bytes = self
+                .http_client
+                .get(era1_path.clone())
+                .recv_bytes()
+                .await
+                .expect("to be able to read era1 file");
+            let mut block_tuples = Era1::iter_tuples(era1_bytes.clone());
+            let mut handles = vec![];
+            let gossip_send_semaphore = Arc::new(Semaphore::new(self.gossip_limit));
+            let mut block_data = block_data.clone();
+            block_data.sort();
+            for block_number in block_data {
+                let block_index = block_number % EPOCH_SIZE;
+                let block_tuple = block_tuples
+                    .find(|block_tuple| block_tuple.header.header.number % EPOCH_SIZE == block_index)
+                    .expect("to be able to find block tuple");
+                let permit = gossip_send_semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("to be able to acquire semaphore");
+                self.metrics.report_current_block(block_number as i64);
+                let handle = Self::spawn_serve_block_tuple(
+                    self.portal_client.clone(),
+                    block_tuple,
+                    epoch_acc.clone(),
+                    header_validator.clone(),
+                    permit,
+                    self.metrics.clone(),
+                    true /* hunt */,
+                );
+                handles.push(handle);
+            }
+            join_all(handles).await;
+        }
+        info!("Bridge mode: {:?} complete.", self.mode);
     }
 
     async fn launch_hunter(&self, sample_size: u64, threshold: u64) -> anyhow::Result<()> {
