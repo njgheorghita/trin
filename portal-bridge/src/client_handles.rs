@@ -55,7 +55,7 @@ pub fn trin_handle(bridge_config: &BridgeConfig) -> anyhow::Result<Child> {
     command
         .kill_on_drop(true)
         .args(["--ephemeral"])
-        .args(["--mb", "0"])
+        .args(["--mb", "1"])
         .args(["--web3-transport", "http"])
         .args(["--network", bridge_config.network.get_network_name()])
         .args(["--portal-subnetworks", &portal_subnetworks])

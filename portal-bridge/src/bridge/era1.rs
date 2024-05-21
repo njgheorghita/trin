@@ -54,6 +54,7 @@ pub struct Era1Bridge {
     pub metrics: BridgeMetricsReporter,
     pub gossip_limit: usize,
     pub execution_api: ExecutionApi,
+    failed_logs: bool,
 }
 
 // todo: validate via checksum, so we don't have to validate content on a per-value basis
@@ -65,6 +66,7 @@ impl Era1Bridge {
         epoch_acc_path: PathBuf,
         gossip_limit: usize,
         execution_api: ExecutionApi,
+        //failed_logs: bool,
     ) -> anyhow::Result<Self> {
         let http_client: Client = Config::new()
             .add_header("Content-Type", "application/xml")
@@ -82,6 +84,7 @@ impl Era1Bridge {
             metrics,
             gossip_limit,
             execution_api,
+            failed_logs: true,
         })
     }
 
@@ -111,7 +114,7 @@ impl Era1Bridge {
 
     async fn launch_random(&self) {
         for era1_path in self.era1_files.clone().into_iter() {
-            self.gossip_era1(era1_path, None, false).await;
+            self.gossip_era1(era1_path, None, true).await;
         }
     }
 
@@ -120,6 +123,11 @@ impl Era1Bridge {
         let era1_files = self.era1_files.clone().into_iter();
         for era1_path in era1_files {
             let epoch = get_epoch_from_era1_path(&era1_path)?;
+            let epochs: Vec<u64> = vec![588, 623, 640, 693, 741, 754, 765, 883, 983, 985, 1008, 1014, 1066, 1133, 1137, 1153, 1230, 1257, 1284, 1320, 1323, 1324, 1369, 1395, 1412, 1414, 1487, 1520, 1536, 1551, 1576, 1580, 1581, 1584, 1623, 1651, 1656, 1706, 1727, 1764, 1773, 1783, 1784, 1788, 1793, 1835, 1836, 1841, 1843, 1855, 1862, 1878, 1885];
+            if !epochs.contains(&epoch) {
+                info!("Skipping epoch: {epoch} as it's not in the list of epochs to sample");
+                continue;
+            }
             info!("Hunting for missing content inside epoch: {epoch}");
             let block_range = (epoch * EPOCH_SIZE)..((epoch + 1) * EPOCH_SIZE);
             let blocks_to_sample = block_range.clone().collect::<Vec<u64>>();
@@ -264,6 +272,7 @@ impl Era1Bridge {
                 permit,
                 self.metrics.clone(),
                 hunt,
+                true,
             );
             serve_block_tuple_handles.push(serve_block_tuple_handle);
         }
@@ -305,6 +314,7 @@ impl Era1Bridge {
         permit: OwnedSemaphorePermit,
         metrics: BridgeMetricsReporter,
         hunt: bool,
+        failed_logs: bool,
     ) -> JoinHandle<()> {
         let number = block_tuple.header.header.number;
         info!("Spawning serve_block_tuple for block at height: {number}");

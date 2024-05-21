@@ -45,7 +45,7 @@ impl Era1 {
         let block_index = BlockIndexEntry::try_from(&file.entries[32770])
             .expect("invalid block index entry")
             .block_index;
-        (0..block_index.count).map(move |i| {
+        (0..block_index.count).rev().map(move |i| {
             let mut entries: [Entry; 4] = Default::default();
             for (j, entry) in entries.iter_mut().enumerate() {
                 *entry = file.entries[i as usize * 4 + j + 1].to_owned();

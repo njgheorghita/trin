@@ -16,6 +16,7 @@ use ethportal_api::{
     jsonrpsee::http_client::{HttpClient, HttpClientBuilder},
     BlockBodyKey, BlockHeaderKey, BlockReceiptsKey, HistoryContentKey, HistoryNetworkApiClient,
 };
+use portal_bridge::api::execution::ExecutionApi;
 use trin_utils::log::init_tracing_logger;
 use trin_validation::constants::MERGE_BLOCK_NUMBER;
 
@@ -37,9 +38,13 @@ struct Metrics {
 }
 
 impl Metrics {
-    fn display_stats(&self) {
+    fn display_stats(&self, epoch: u64) {
         info!(
-            "Headers {:?}% // Bodies {:?}% // Receipts {:?}%",
+            "Sampling epoch {:?} - {:?}/{:?} - {:?}% // Headers {:?}% // Bodies {:?}% // Receipts {:?}%",
+            epoch,
+            self.header.success_count + self.block_body.success_count + self.receipts.success_count,
+            self.header.total_count() + self.block_body.total_count() + self.receipts.total_count(),
+            (self.header.success_count + self.block_body.success_count + self.receipts.success_count) * 100 / (self.header.total_count() + self.block_body.total_count() + self.receipts.total_count()),
             self.header.success_rate(),
             self.block_body.success_rate(),
             self.receipts.success_rate(),
@@ -80,17 +85,24 @@ impl Details {
     }
 }
 
+async fn get_provider() -> ExecutionApi {
+    //Provider::<Http>::connect(&format!("https://mainnet.infura.io/v3/{infura_project_id}"))
+    let api = ExecutionApi::new(Url::parse("https://geth-lighthouse.mainnet.eu1.ethpandaops.io/").unwrap(), Url::parse("https://geth-lighthouse.mainnet.eu1.ethpandaops.io/").unwrap()).await.unwrap();
+    api
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     init_tracing_logger();
     let audit_config = SampleConfig::parse();
     info!("Running Sample Range Audit: {:?}", audit_config.range);
     let infura_project_id = std::env::var("TRIN_INFURA_PROJECT_ID")?;
-    let provider =
-        Provider::<Http>::connect(&format!("https://mainnet.infura.io/v3/{infura_project_id}"))
-            .await;
+    //let provider =
+        //Provider::<Http>::connect(&format!("https://mainnet.infura.io/v3/{infura_project_id}"))
+            //.await;
+    let api = get_provider().await;
     let client = HttpClientBuilder::default().build(audit_config.node_ip)?;
-    let latest_block: u64 = provider.get_block_number().await?.try_into().unwrap();
+    let latest_block: u64 = api.get_latest_block_number().await?.try_into().unwrap();
     let (start, end) = match audit_config.range {
         SampleRange::Shanghai => (SHANGHAI_BLOCK_NUMBER, latest_block),
         SampleRange::FourFours => (0, MERGE_BLOCK_NUMBER),
@@ -99,8 +111,17 @@ pub async fn main() -> Result<()> {
         SampleRange::Range(start, end) => (start, end),
     };
     let mut blocks: Vec<u64> = (start..end).collect();
-    let sample_size = std::cmp::min(audit_config.sample_size, blocks.len());
-    info!("Sampling {sample_size} blocks from range: {start:?} - {end:?}");
+    for epoch in 1716..1897 {
+        sample_epoch(epoch, client.clone(), api.clone()).await?;
+    }
+    Ok(())
+}
+
+async fn sample_epoch(epoch: u64, client: HttpClient, provider: ExecutionApi) -> anyhow::Result<()> {
+    //let sample_size = std::cmp::min(audit_config.sample_size, blocks.len());
+    //info!("Sampling epoch: {epoch}");
+    let sample_size = 16;
+    let mut blocks: Vec<u64> = (epoch * 8192..(epoch + 1) * 8192).collect();
     blocks.shuffle(&mut rand::thread_rng());
     let blocks_to_sample = blocks[0..sample_size].to_vec();
     let metrics = Arc::new(Mutex::new(Metrics::default()));
@@ -110,15 +131,12 @@ pub async fn main() -> Result<()> {
         let provider = provider.clone();
         async move {
             let block_hash = provider
-                .get_block(block_number)
+                .get_block_hash(block_number)
                 .await
-                .unwrap()
-                .unwrap()
-                .hash
                 .unwrap();
             let _ = audit_block(
                 block_number,
-                B256::from_slice(block_hash.as_bytes()),
+                block_hash,
                 metrics,
                 client,
             )
@@ -128,7 +146,7 @@ pub async fn main() -> Result<()> {
     .buffer_unordered(FUTURES_BUFFER_SIZE)
     .collect::<Vec<()>>();
     futures.await;
-    metrics.lock().unwrap().display_stats();
+    metrics.lock().unwrap().display_stats(epoch);
     Ok(())
 }
 
@@ -146,7 +164,7 @@ async fn audit_block(
             metrics.lock().unwrap().header.success_count += 1;
         }
         Err(_) => {
-            warn!("Header not found for block #{block_number} - {hash:?}");
+            //warn!("Header not found for block #{block_number} - {hash:?}");
             metrics.lock().unwrap().header.failure_count += 1;
         }
     }
@@ -155,7 +173,7 @@ async fn audit_block(
             metrics.lock().unwrap().block_body.success_count += 1;
         }
         Err(_) => {
-            warn!("Body not found for block #{block_number} - {hash:?}");
+            //warn!("Body not found for block #{block_number} - {hash:?}");
             metrics.lock().unwrap().block_body.failure_count += 1;
         }
     }
@@ -164,7 +182,7 @@ async fn audit_block(
             metrics.lock().unwrap().receipts.success_count += 1;
         }
         Err(_) => {
-            warn!("Receipts not found for block #{block_number} - {hash:?}");
+            //warn!("Receipts not found for block #{block_number} - {hash:?}");
             metrics.lock().unwrap().receipts.failure_count += 1;
         }
     }
