@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
+use tokio::time::{sleep, Duration};
 
 use tracing::info;
 
@@ -8,7 +9,8 @@ use crate::{
 };
 use ethportal_api::{
     jsonrpsee::async_client::Client, types::cli::TrinConfig, Discv5ApiClient,
-    HistoryNetworkApiClient,
+    HistoryNetworkApiClient, ContentValue, OverlayContentKey,
+    utils::bytes::hex_encode,
 };
 
 pub async fn test_gossip_with_trace(peertest: &Peertest, target: &Client) {
@@ -94,4 +96,113 @@ pub async fn test_gossip_with_trace(peertest: &Peertest, target: &Client) {
     assert_eq!(result.offered.len(), 2);
     assert_eq!(result.accepted.len(), 0);
     assert_eq!(result.transferred.len(), 0);
+}
+
+pub async fn test_gossip_dropped(peertest: &Peertest, target: &Client) {
+    info!("Testing Gossip with tracing");
+
+    // connect target to network
+    let _ = target.ping(peertest.bootnode.enr.clone()).await.unwrap();
+
+    // Spin up a fresh client, not connected to existing peertest
+    let test_ip_addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    // Use an uncommon port for the peertest to avoid clashes.
+    let test_discovery_port = 8889;
+    let external_addr = format!("{test_ip_addr}:{test_discovery_port}");
+    let fresh_ipc_path = format!("/tmp/trin-jsonrpc-{test_discovery_port}.ipc");
+    let trin_config = TrinConfig::new_from(
+        [
+            "trin",
+            "--portal-subnetworks",
+            "history",
+            "--external-address",
+            external_addr.as_str(),
+            "--mb",
+            "1",
+            "--web3-ipc-path",
+            fresh_ipc_path.as_str(),
+            "--ephemeral",
+            "--discovery-port",
+            test_discovery_port.to_string().as_ref(),
+            "--bootnodes",
+            "none",
+            "--unsafe-private-key",
+            // node id: 0x27128939ed60d6f4caef0374da15361a2c1cd6baa1a5bccebac1acd18f485900
+            "0x9ca7889c09ef1162132251b6284bd48e64bd3e71d75ea33b959c37be0582a2fd",
+        ]
+        .iter(),
+    )
+    .unwrap();
+
+    let _test_client_rpc_handle = trin::run_trin(trin_config).await.unwrap();
+    let fresh_target = reth_ipc::client::IpcClientBuilder::default()
+        .build(fresh_ipc_path)
+        .await
+        .unwrap();
+    let fresh_enr = fresh_target.node_info().await.unwrap().enr;
+
+    let mut stored_mbs = 0;
+    println!("storing content 1");
+    let epoch_acc = std::fs::read("test_assets/mainnet/0x030013c08b64bf7e3afab80ad4f8ea9423f1a7d8b31a149fc3b832d7980719c60c.portalcontent").unwrap();
+    let epoch_acc_hash = ethportal_api::utils::bytes::hex_decode("0x0013c08b64bf7e3afab80ad4f8ea9423f1a7d8b31a149fc3b832d7980719c60c").unwrap();
+    let content_key_1 = ethportal_api::HistoryContentKey::EpochAccumulator(ethportal_api::EpochAccumulatorKey {
+        epoch_hash: alloy_primitives::B256::from_slice(&epoch_acc_hash).into(),
+    });
+    let content_value = ethportal_api::HistoryContentValue::decode(&epoch_acc).unwrap();
+    let _ = target.ping(fresh_target.node_info().await.unwrap().enr.clone()).await.unwrap();
+    sleep(Duration::from_secs(1)).await;
+    //target.offer(fresh_enr.clone(), content_key_1.clone(), Some(content_value.clone())).await.unwrap();
+    HistoryNetworkApiClient::store(&fresh_target, content_key_1.clone(), content_value.clone())
+        .await
+        .unwrap();
+    stored_mbs += content_value.encode().len() as u64;
+    sleep(Duration::from_secs(1)).await;
+
+    assert!(HistoryNetworkApiClient::local_content(&fresh_target, content_key_1.clone())
+        .await
+        .is_ok());
+    assert!(HistoryNetworkApiClient::local_content(target, content_key_1.clone())
+        .await
+        .is_err());
+
+
+
+    println!("storing content 2");
+    let epoch_acc = std::fs::read("test_assets/mainnet/0x03ed8823c84177d8ffabf104566f313a2b2a43d05304ba6c74c2f5555bae0ef329.portalcontent").unwrap();
+    let epoch_acc_hash = ethportal_api::utils::bytes::hex_decode("0xed8823c84177d8ffabf104566f313a2b2a43d05304ba6c74c2f5555bae0ef329").unwrap();
+    let content_key_2 = ethportal_api::HistoryContentKey::EpochAccumulator(ethportal_api::EpochAccumulatorKey {
+        epoch_hash: alloy_primitives::B256::from_slice(&epoch_acc_hash).into(),
+    });
+    let content_value = ethportal_api::HistoryContentValue::decode(&epoch_acc).unwrap();
+    target.offer(fresh_enr, content_key_2.clone(), Some(content_value.clone())).await.unwrap();
+    //stored_mbs += content_value.encode().len() as u64;
+
+
+    //println!("offering content 3");
+    //let (content_key_3, content_value) = fixture_header_with_proof();
+    //target.offer(fresh_enr, content_key_3.clone(), Some(content_value.clone())).await.unwrap();
+    //stored_mbs += content_value.encode().len() as u64;
+    
+    // connect target to network
+    // jk the offer should ping
+    //let _ = target.ping(fresh_target.node_info().await.unwrap().enr.clone()).await.unwrap();
+    println!("content id 1: {:?}", hex_encode(content_key_1.content_id()));
+    //println!("content id 3: {:?}", hex_encode(content_key_3.content_id()));
+    println!("content id 2: {:?}", hex_encode(content_key_2.content_id()));
+    let target_enr = target.node_info().await.unwrap().enr.clone();
+    println!("target enr: {:?}", target_enr.to_base64());
+    sleep(Duration::from_secs(3)).await;
+
+
+    println!("Stored {} MBs", stored_mbs);
+    println!("Stored {} MBs", stored_mbs / 1024 / 1024);
+    assert!(HistoryNetworkApiClient::local_content(&fresh_target, content_key_1.clone())
+        .await
+        .is_err());
+    assert!(HistoryNetworkApiClient::local_content(&fresh_target, content_key_2.clone())
+        .await
+        .is_ok());
+    assert!(HistoryNetworkApiClient::local_content(target, content_key_2.clone())
+        .await
+        .is_ok());
 }

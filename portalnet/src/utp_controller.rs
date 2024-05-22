@@ -162,6 +162,7 @@ impl UtpController {
         data: Vec<u8>,
         side: UtpConnectionSide,
     ) -> bool {
+        println!("utp outbound stream init");
         self.metrics
             .report_utp_active_inc(UtpDirectionLabel::Outbound);
         let (stream, message) = match side {
@@ -185,6 +186,7 @@ impl UtpController {
                     UtpDirectionLabel::Outbound,
                     UtpOutcomeLabel::FailedConnection,
                 );
+                println!("utp outbound stream failed1");
                 debug!(
                     %err,
                     cid.send,
@@ -199,6 +201,7 @@ impl UtpController {
         match stream.write(&data).await {
             Ok(write_size) => {
                 if write_size != data.len() {
+                    println!("utp outbound stream failed2");
                     self.metrics.report_utp_outcome(
                         UtpDirectionLabel::Outbound,
                         UtpOutcomeLabel::FailedDataTx,
@@ -214,6 +217,7 @@ impl UtpController {
                 }
             }
             Err(err) => {
+                println!("utp outbound stream failed3");
                 self.metrics
                     .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::FailedDataTx);
                 debug!(
@@ -229,6 +233,7 @@ impl UtpController {
 
         // close uTP connection
         if let Err(err) = stream.close().await {
+            println!("utp outbound stream failed4");
             self.metrics
                 .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::FailedShutdown);
             debug!(
@@ -240,6 +245,7 @@ impl UtpController {
             );
             return false;
         };
+        println!("utp outbound stream success");
         self.metrics
             .report_utp_outcome(UtpDirectionLabel::Outbound, UtpOutcomeLabel::Success);
         true

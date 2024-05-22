@@ -238,7 +238,7 @@ impl IdIndexedV1Store {
         &mut self,
         content_key: &K,
         content_value: Vec<u8>,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
         let insert_with_pruning_timer = self.metrics.start_process_timer("insert_with_pruning");
 
         let content_id = content_key.content_id();
@@ -272,12 +272,18 @@ impl IdIndexedV1Store {
         self.usage_stats.total_entry_size_bytes += content_size as u64;
         self.usage_stats.report_metrics(&self.metrics);
 
+        let mut dropped_content: Vec<(K, Vec<u8>)> = Vec::new();
+
         if self.pruning_strategy.should_prune(&self.usage_stats) {
-            self.prune()?;
+            let pruned_content = self.prune_with_return_dropped()?;
+            dropped_content.extend(pruned_content);
         }
 
+        if !dropped_content.is_empty() {
+            println!("deleted_content: {:?}", dropped_content[0].0);
+        }
         self.metrics.stop_process_timer(insert_with_pruning_timer);
-        Ok(())
+        Ok(dropped_content)
     }
 
     /// Deletes content with the given content id.
@@ -503,6 +509,95 @@ impl IdIndexedV1Store {
         );
         self.metrics.stop_process_timer(pruning_timer);
         Ok(())
+    }
+
+    /// Prunes database and updates `radius` / with return dropped
+    fn prune_with_return_dropped<K: ethportal_api::OverlayContentKey>(
+        &mut self,
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
+        let mut pruned_content = Vec::new();
+        if !self.pruning_strategy.should_prune(&self.usage_stats) {
+            warn!(Db = %self.config.content_type,
+                "Pruning requested but not needed. Skipping");
+            return Ok(pruned_content);
+        }
+
+        let pruning_timer = self.metrics.start_process_timer("prune");
+        debug!(Db = %self.config.content_type,
+            "Pruning start: count={} capacity={}",
+            self.usage_stats.entry_count,
+            self.usage_stats.total_entry_size_bytes,
+        );
+
+        let conn = self.config.sql_connection_pool.get()?;
+        let mut delete_query = conn.prepare(&sql::delete_farthest(&self.config.content_type))?;
+
+        while self.pruning_strategy.should_prune(&self.usage_stats) {
+            let to_delete = self.pruning_strategy.get_pruning_count(&self.usage_stats);
+
+            if to_delete == 0 {
+                error!(
+                    Db = %self.config.content_type,
+                    "Entries to prune is 0. This is not supposed to happen (we should be above storage capacity)."
+                );
+                return Ok(pruned_content);
+            }
+
+            let pruning_start_time = Instant::now();
+            let delete_timer = self.metrics.start_process_timer("prune_delete");
+            // consequence of moving this in loop?
+            let mut get_dropped_query =
+                conn.prepare(&sql::get_droppable(&self.config.content_type))?;
+            let deleted_content = get_dropped_query
+                .query_map(named_params! { ":limit": to_delete }, |row| {
+                    let key_bytes: Vec<u8> = row.get("content_key")?;
+                    let value_bytes: Vec<u8> = row.get("content_value")?;
+                    K::try_from(key_bytes)
+                        .map(|key| (key, value_bytes))
+                        .map_err(|e| {
+                            // what is this error?
+                            rusqlite::Error::FromSqlConversionFailure(0, Type::Blob, e.into())
+                        })
+                })?
+                .collect::<Result<Vec<(K, Vec<u8>)>, rusqlite::Error>>()?;
+            pruned_content.extend(deleted_content);
+            // consequence of moving this in loop?
+            let deleted_content_sizes = delete_query
+                .query_map(named_params! { ":limit": to_delete }, |row| {
+                    row.get("content_size")
+                })?
+                .collect::<Result<Vec<u64>, rusqlite::Error>>()?;
+            self.metrics.stop_process_timer(delete_timer);
+            self.pruning_strategy
+                .observe_pruning_duration(pruning_start_time.elapsed());
+
+            if to_delete != deleted_content_sizes.len() as u64 {
+                error!(Db = %self.config.content_type,
+                    "Attempted to delete {to_delete} but deleted {}",
+                    deleted_content_sizes.len());
+                self.init_usage_stats()?;
+                break;
+            }
+
+            self.usage_stats.entry_count -= to_delete;
+            self.usage_stats.total_entry_size_bytes -= deleted_content_sizes.iter().sum::<u64>();
+            self.usage_stats.report_metrics(&self.metrics);
+            // drop(get_dropped_query);
+        }
+        // Free connection.
+        drop(delete_query);
+        drop(conn);
+
+        // Update radius to the current farthest content
+        self.set_radius_to_farthest()?;
+
+        debug!(Db = %self.config.content_type,
+            "Pruning end: count={} capacity={}",
+            self.usage_stats.entry_count,
+            self.usage_stats.total_entry_size_bytes,
+        );
+        self.metrics.stop_process_timer(pruning_timer);
+        Ok(pruned_content)
     }
 }
 

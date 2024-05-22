@@ -2847,6 +2847,7 @@ dependencies = [
  "hex",
  "hyper",
  "jsonrpsee",
+ "keccak-hash",
  "portal-bridge",
  "rand 0.8.5",
  "reth-ipc",

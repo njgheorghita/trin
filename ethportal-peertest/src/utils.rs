@@ -90,7 +90,7 @@ fn read_history_content_key_value(
 }
 
 /// Wrapper function for fixtures that directly returns the tuple.
-fn read_fixture(file_name: &str) -> (HistoryContentKey, HistoryContentValue) {
+pub fn read_fixture(file_name: &str) -> (HistoryContentKey, HistoryContentValue) {
     read_history_content_key_value(file_name)
         .unwrap_or_else(|err| panic!("Error reading fixture: {err}"))
 }

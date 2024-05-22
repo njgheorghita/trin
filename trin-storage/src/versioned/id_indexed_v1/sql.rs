@@ -80,6 +80,19 @@ pub fn delete_farthest(content_type: &ContentType) -> String {
     )
 }
 
+pub fn get_droppable(content_type: &ContentType) -> String {
+    format!(
+        "SELECT content_key, content_value FROM {0}
+        WHERE rowid IN (
+            SELECT rowid
+            FROM {0}
+            ORDER BY distance_short DESC
+            LIMIT :limit
+        )",
+        table_name(content_type)
+    )
+}
+
 pub fn lookup_farthest(content_type: &ContentType) -> String {
     format!(
         "SELECT content_id, distance_short FROM {}

@@ -20,6 +20,7 @@ futures = "0.3.21"
 hex = "0.4.3"
 hyper = { version = "0.14", features = ["full"] }
 jsonrpsee = {version="0.20.0", features = ["async-client", "client", "macros", "server"]}
+keccak-hash = "0.10.0"
 rand = "0.8.4"
 reth-ipc = { tag = "v0.2.0-beta.5", git = "https://github.com/paradigmxyz/reth.git"}
 rpc = { path = "../rpc" }

@@ -25,7 +25,7 @@ use ethportal_api::{
         enr::Enr,
         portal_wire::{PopulatedOffer, PopulatedOfferWithResult, Request, Response},
     },
-    utils::bytes::hex_encode,
+    utils::bytes::{hex_encode, hex_encode_compact},
     OverlayContentKey, RawContentKey,
 };
 
@@ -48,6 +48,11 @@ pub fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
     command_tx: mpsc::UnboundedSender<OverlayCommand<TContentKey>>,
     utp_controller: Option<Arc<UtpController>>,
 ) -> usize {
+    let ids_to_propagate: Vec<String> = content
+        .iter()
+        .map(|(k, _)| hex_encode_compact(k.content_id()))
+        .collect();
+    debug!(ids = ?ids_to_propagate, "propagating validated content");
     // Get all connected nodes from overlay routing table
     let kbuckets = kbuckets.read();
     let all_nodes: Vec<&kbucket::Node<NodeId, Node>> = kbuckets
@@ -84,9 +89,12 @@ pub fn propagate_gossip_cross_thread<TContentKey: OverlayContentKey>(
         }
     }
 
+    println!("enrs_and_content: {:?}", enrs_and_content.len());
     let num_propagated_peers = enrs_and_content.len();
     // Create and send OFFER overlay request to the interested nodes
     for (enr_string, interested_content) in enrs_and_content.into_iter() {
+        println!("enr_string: {:?}", enr_string);
+        println!("interested_content: {:?}", interested_content.len());
         let permit = match utp_controller {
             Some(ref utp_controller) => match utp_controller.get_outbound_semaphore() {
                 Some(permit) => Some(permit),

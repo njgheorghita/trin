@@ -54,7 +54,7 @@ pub trait ContentStore {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(), ContentStoreError>;
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError>;
 
     /// Returns whether the content denoted by `key` is within the radius of the data store and not
     /// already stored within the data store.
@@ -118,12 +118,13 @@ impl ContentStore for MemoryContentStore {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
         let content_id = key.content_id();
         let value: &[u8] = value.as_ref();
         self.store.insert(content_id.to_vec(), value.to_vec());
 
-        Ok(())
+        // fix
+        Ok(vec![])
     }
 
     fn is_key_within_radius_and_unavailable<K: OverlayContentKey>(
