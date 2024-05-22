@@ -19,7 +19,6 @@ use discv5::{
     rpc::RequestId,
 };
 use futures::{channel::oneshot, future::join_all, prelude::*};
-use itertools::Itertools;
 use parking_lot::RwLock;
 use rand::seq::SliceRandom;
 use smallvec::SmallVec;
@@ -79,7 +78,7 @@ use ethportal_api::{
 };
 use trin_metrics::overlay::OverlayMetricsReporter;
 use trin_storage::{ContentStore, ShouldWeStoreContent};
-use trin_validation::validator::{ValidationResult, Validator};
+use trin_validation::validator::Validator;
 
 pub const FIND_NODES_MAX_NODES: usize = 32;
 
@@ -1202,7 +1201,7 @@ where
                     })
                 })
                 .collect::<Vec<_>>();
-            let validated_content = join_all(handles)
+            let validated_content: Vec<(TContentKey, Vec<u8>)> = join_all(handles)
                 .await
                 .into_iter()
                 .enumerate()
@@ -1221,8 +1220,16 @@ where
                         None
                     })
                 })
-                .collect::<Vec<_>>();
-            let _ = Self::propagate_validated_content(validated_content, utp_processing).await;
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flatten()
+                .collect();
+            propagate_gossip_cross_thread(
+                validated_content,
+                utp_processing.kbuckets,
+                utp_processing.command_tx.clone(),
+                Some(utp_processing.utp_controller),
+            );
             // explicitly drop semaphore permit in thread so the permit is moved into the thread
             drop(permit);
         });
@@ -1531,48 +1538,17 @@ where
         Ok(response)
     }
 
-    async fn propagate_validated_content(
-        validated_content: Vec<(TContentKey, Vec<u8>, ValidationResult<TContentKey>)>,
-        utp_processing: UtpProcessing<TValidator, TStore, TContentKey>,
-    ) -> anyhow::Result<()> {
-        // Propagate all validated content, whether or not it was stored.
-        let content_to_propagate: Vec<(TContentKey, Vec<u8>)> = validated_content
-            .into_iter()
-            .flat_map(|(content_key, content_value, validation_result)| {
-                match validation_result.additional_content_to_propagate {
-                    Some(additional_content_to_propagate) => vec![
-                        (content_key, content_value),
-                        additional_content_to_propagate,
-                    ],
-                    None => vec![(content_key, content_value)],
-                }
-            })
-            .unique_by(|(key, _)| key.content_id())
-            .collect();
-
-        let ids_to_propagate: Vec<String> = content_to_propagate
-            .iter()
-            .map(|(k, _)| hex_encode_compact(k.content_id()))
-            .collect();
-        debug!(ids = ?ids_to_propagate, "propagating validated content");
-        propagate_gossip_cross_thread(
-            content_to_propagate,
-            utp_processing.kbuckets,
-            utp_processing.command_tx.clone(),
-            Some(utp_processing.utp_controller),
-        );
-        Ok(())
-    }
-
     /// Validates & stores content value received from peer.
     /// Checks if validated content should be stored, and stores it if true
+    /// Returns validated content/content dropped from storage to
+    /// propagate to other peers.
     // (this step requires a dedicated task since it might require
     // non-blocking requests to this/other overlay networks).
     async fn validate_and_store_content(
         key: TContentKey,
         content_value: Vec<u8>,
         utp_processing: UtpProcessing<TValidator, TStore, TContentKey>,
-    ) -> Option<(TContentKey, Vec<u8>, ValidationResult<TContentKey>)> {
+    ) -> Option<Vec<(TContentKey, Vec<u8>)>> {
         // Validate received content
         let validation_result = utp_processing
             .validator
@@ -1611,18 +1587,33 @@ where
             .store
             .read()
             .is_key_within_radius_and_unavailable(&key);
+        // xxxxx
+        let mut content_to_propagate = vec![(key.clone(), content_value.clone())];
+        if let Some(additional_content_to_propagate) =
+            validation_result.additional_content_to_propagate
+        {
+            content_to_propagate.push(additional_content_to_propagate);
+        }
         match key_desired {
             Ok(ShouldWeStoreContent::Store) => {
-                if let Err(err) = utp_processing
+                // xxx
+                match utp_processing
                     .store
                     .write()
                     .put(key.clone(), &content_value)
                 {
-                    warn!(
-                        error = %err,
-                        content.key = %key.to_hex(),
-                        "Error storing accepted content"
-                    );
+                    Ok(dropped_content) => {
+                        // add dropped content to validation result, so it will be propagated
+                        debug!("Dropped {:?} pieces of content after inserting new content, propagating them back into the network.", dropped_content.len());
+                        content_to_propagate.extend(dropped_content);
+                    }
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            content.key = %key.to_hex(),
+                            "Error storing accepted content"
+                        );
+                    }
                 }
             }
             Ok(ShouldWeStoreContent::NotWithinRadius) => {
@@ -1644,8 +1635,8 @@ where
                     "Error checking data store for content key"
                 );
             }
-        }
-        Some((key, content_value, validation_result))
+        };
+        Some(content_to_propagate)
     }
 
     /// Attempts to send a single FINDCONTENT request to a fallback peer,
@@ -1716,8 +1707,12 @@ where
                 return Ok(());
             }
         };
-
-        let _ = Self::propagate_validated_content(vec![validated_content], utp_processing).await;
+        propagate_gossip_cross_thread(
+            validated_content,
+            utp_processing.kbuckets,
+            utp_processing.command_tx.clone(),
+            Some(utp_processing.utp_controller),
+        );
         Ok(())
     }
 
@@ -1884,17 +1879,29 @@ where
                         |val| matches!(val, ShouldWeStoreContent::Store),
                     );
             if should_store {
-                if let Err(err) = utp_processing
+                match utp_processing
                     .store
                     .write()
                     .put(content_key.clone(), content.clone())
                 {
-                    error!(
-                        error = %err,
-                        content.id = %hex_encode_compact(content_id),
-                        content.key = %content_key,
-                        "Error storing content"
-                    );
+                    Ok(dropped_content) => {
+                        // add dropped content to validation result, so it will be propagated
+                        // DOES THIS BLOCK STUFF?
+                        propagate_gossip_cross_thread(
+                            dropped_content,
+                            utp_processing.kbuckets.clone(),
+                            utp_processing.command_tx.clone(),
+                            Some(utp_processing.utp_controller.clone()),
+                        );
+                    }
+                    Err(err) => {
+                        error!(
+                            error = ?err,
+                            content.id = %hex_encode_compact(content_id),
+                            content.key = %content_key,
+                            "Error storing content"
+                        );
+                    }
                 }
             }
         }

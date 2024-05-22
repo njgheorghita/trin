@@ -23,7 +23,7 @@ impl ContentStore for HistoryStorage {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
         self.store.insert(&key, value.as_ref().to_vec())
     }
 

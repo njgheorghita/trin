@@ -30,19 +30,28 @@ impl ContentStore for StateStorage {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
         let key = StateContentKey::try_from(key.to_bytes())?;
         let value = StateContentValue::decode(value.as_ref())?;
 
         match &key {
             StateContentKey::AccountTrieNode(account_trie_node_key) => {
-                self.put_account_trie_node(&key, account_trie_node_key, value)
+                match self.put_account_trie_node(&key, account_trie_node_key, value) {
+                    Ok(_) => Ok(vec![]),
+                    Err(e) => Err(e),
+                }
             }
             StateContentKey::ContractStorageTrieNode(contract_storage_trie_key) => {
-                self.put_contract_storage_trie_node(&key, contract_storage_trie_key, value)
+                match self.put_contract_storage_trie_node(&key, contract_storage_trie_key, value) {
+                    Ok(_) => Ok(vec![]),
+                    Err(e) => Err(e),
+                }
             }
             StateContentKey::ContractBytecode(contract_bytecode_key) => {
-                self.put_contract_bytecode(&key, contract_bytecode_key, value)
+                match self.put_contract_bytecode(&key, contract_bytecode_key, value) {
+                    Ok(_) => Ok(vec![]),
+                    Err(e) => Err(e),
+                }
             }
         }
     }
@@ -126,8 +135,15 @@ impl StateStorage {
         let trie_node = TrieNode {
             node: last_trie_node.clone(),
         };
-        self.store
+        match self
+            .store
             .insert(content_key, StateContentValue::TrieNode(trie_node).encode())
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(ContentStoreError::InvalidData {
+                message: "Failed to insert ContractStorageTrieNode".to_string(),
+            }),
+        }
     }
 
     fn put_contract_storage_trie_node(
@@ -162,8 +178,16 @@ impl StateStorage {
         let trie_node = TrieNode {
             node: last_trie_node.clone(),
         };
-        self.store
+        match self
+            .store
             .insert(content_key, StateContentValue::TrieNode(trie_node).encode())
+        {
+            Ok(_) => Ok(()),
+            // idk, there's a better way
+            Err(_) => Err(ContentStoreError::InvalidData {
+                message: "Failed to insert ContractStorageTrieNode".to_string(),
+            }),
+        }
     }
 
     fn put_contract_bytecode(
@@ -192,10 +216,16 @@ impl StateStorage {
 
         let contract_code = ContractBytecode { code: value.code };
 
-        self.store.insert(
+        match self.store.insert(
             content_key,
             StateContentValue::ContractBytecode(contract_code).encode(),
-        )
+        ) {
+            Ok(_) => Ok(()),
+            // idk, there's a better way
+            Err(_) => Err(ContentStoreError::InvalidData {
+                message: "Failed to insert ContractStorageTrieNode".to_string(),
+            }),
+        }
     }
 }
 

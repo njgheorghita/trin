@@ -225,8 +225,11 @@ impl ContentStore for BeaconStorage {
         &mut self,
         key: K,
         value: V,
-    ) -> Result<(), ContentStoreError> {
-        self.store(&key, &value.as_ref().to_vec())
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
+        match self.store(&key, &value.as_ref().to_vec()) {
+            Ok(_) => Ok(vec![]),
+            Err(err) => Err(err),
+        }
     }
 
     /// The "radius" concept is not applicable for Beacon network

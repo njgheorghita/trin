@@ -238,7 +238,7 @@ impl IdIndexedV1Store {
         &mut self,
         content_key: &K,
         content_value: Vec<u8>,
-    ) -> Result<(), ContentStoreError> {
+    ) -> Result<Vec<(K, Vec<u8>)>, ContentStoreError> {
         let insert_with_pruning_timer = self.metrics.start_process_timer("insert_with_pruning");
 
         let content_id = content_key.content_id();
@@ -276,8 +276,10 @@ impl IdIndexedV1Store {
             self.prune()?;
         }
 
+        let dropped_content: Vec<(K, Vec<u8>)> = Vec::new();
+
         self.metrics.stop_process_timer(insert_with_pruning_timer);
-        Ok(())
+        Ok(dropped_content)
     }
 
     /// Deletes content with the given content id.
