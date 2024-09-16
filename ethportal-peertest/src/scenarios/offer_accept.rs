@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use alloy_primitives::Bytes;
+use ssz::Decode;
 use tracing::info;
 
 use crate::{
@@ -11,12 +13,14 @@ use crate::{
     },
     Peertest,
 };
+use e2store::era1::Era1;
 use ethportal_api::{
-    jsonrpsee::async_client::Client,
-    types::{enr::Enr, portal_wire::OfferTrace},
+    jsonrpsee::{async_client::Client, http_client::HttpClient},
+    types::{enr::Enr, execution::accumulator::EpochAccumulator, portal_wire::OfferTrace},
     utils::bytes::hex_encode,
-    ContentValue, Discv5ApiClient, HistoryNetworkApiClient,
+    ContentValue, Discv5ApiClient, HistoryContentKey, HistoryContentValue, HistoryNetworkApiClient,
 };
+use portal_bridge::api::execution::construct_proof;
 
 pub async fn test_unpopulated_offer(peertest: &Peertest, target: &Client) {
     info!("Testing Unpopulated OFFER/ACCEPT flow");
@@ -408,4 +412,78 @@ pub async fn test_offer_propagates_gossip_multiple_large_content_values(
         receipts_value_2,
         wait_for_history_content(&peertest.nodes[0].ipc_client, receipts_key_2).await,
     );
+}
+
+pub async fn test_offer_concurrent_limit(peertest: &Peertest, target: HttpClient) {
+    info!("Testing offer concurrent limit");
+    // the actual limit being tested is 2 * limit (receipts & body for each block)
+    let limit = 32;
+    let epoch_acc = std::fs::read("./test_assets/era1/1896_epoch_acc.portalcontent").unwrap();
+    let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap();
+    let era1_path = "./test_assets/era1/mainnet-01896-e6ebe562.era1".to_string();
+    let era1 = std::fs::read(era1_path).unwrap();
+    let era1 = Era1::iter_tuples(era1);
+
+    let tuples = era1.take(limit).collect::<Vec<_>>();
+    let body_keys: Vec<HistoryContentKey> = tuples
+        .iter()
+        .map(|tuple| HistoryContentKey::new_block_body(tuple.header.header.hash()))
+        .collect();
+    let receipts_keys: Vec<HistoryContentKey> = tuples
+        .iter()
+        .map(|tuple| HistoryContentKey::new_block_receipts(tuple.header.header.hash()))
+        .collect();
+
+    for tuple in tuples.clone() {
+        let header_key = HistoryContentKey::new_block_header_by_hash(tuple.header.header.hash());
+        let header_value = HistoryContentValue::BlockHeaderWithProof(
+            construct_proof(tuple.header.header.clone(), &epoch_acc)
+                .await
+                .unwrap(),
+        );
+        let store_result = peertest
+            .bootnode
+            .ipc_client
+            .store(header_key.clone(), header_value.encode())
+            .await
+            .unwrap();
+        assert!(store_result);
+    }
+    let mut test_data: Vec<(HistoryContentKey, Bytes)> = vec![];
+    for tuple in tuples {
+        let body_key = HistoryContentKey::new_block_body(tuple.header.header.hash());
+        let body_value = HistoryContentValue::BlockBody(tuple.body.body.clone());
+        test_data.push((body_key.clone(), body_value.encode()));
+        let receipts_key = HistoryContentKey::new_block_receipts(tuple.header.header.hash());
+        let receipts_value = HistoryContentValue::Receipts(tuple.receipts.receipts.clone());
+        test_data.push((receipts_key.clone(), receipts_value.encode()));
+    }
+
+    let portal_client = target;
+    let peer_enr = peertest.bootnode.ipc_client.node_info().await.unwrap().enr;
+    let mut handles = vec![];
+    for (key, value) in test_data {
+        let peer_enr_clone = peer_enr.clone();
+        let portal_client_clone = portal_client.clone();
+        let body_handle = tokio::spawn(async move {
+            let result = HistoryNetworkApiClient::trace_offer(
+                &portal_client_clone,
+                peer_enr_clone,
+                key.clone(),
+                value,
+            )
+            .await
+            .unwrap();
+            println!("offer Result: {result:?} - {key:?}");
+        });
+        handles.push(body_handle);
+    }
+    println!("XXXXXXXXXXXXXXXX all offers sent XXXXXXXXXXXXXXXXXXXXXXX");
+    let _ = futures::future::join_all(handles).await;
+    for key in body_keys {
+        wait_for_history_content(&peertest.bootnode.ipc_client, key.clone()).await;
+    }
+    for key in receipts_keys {
+        wait_for_history_content(&peertest.bootnode.ipc_client, key.clone()).await;
+    }
 }

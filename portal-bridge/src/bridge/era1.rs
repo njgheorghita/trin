@@ -670,3 +670,96 @@ fn get_epoch_from_era1_path(era1_path: &str) -> anyhow::Result<u64> {
     let epoch = epoch_str.parse::<u64>()?;
     Ok(epoch)
 }
+
+//#[cfg(test)]
+//mod tests {
+//use super::*;
+//use std::path::PathBuf;
+
+/* #[tokio::test] */
+/* async fn test_xxx() { */
+/* let epoch_acc = */
+/* std::fs::read("../test_assets/era1/1836_epoch_acc.portalcontent".to_string()).unwrap(); */
+/* use ssz::Decode; */
+/* let epoch_acc = EpochAccumulator::from_ssz_bytes(&epoch_acc).unwrap(); */
+/* let era1_path = "../test_assets/era1/mainnet-01836-87fe297b.era1".to_string(); */
+/* let era1 = std::fs::read(era1_path).unwrap(); */
+/* let era1 = Era1::iter_tuples(era1); */
+/* //let mut largest_10_values = vec![]; */
+/* use ethportal_api::OverlayContentKey; */
+/* for block_tuple in era1 { */
+/* if block_tuple.header.header.number == 15040641 { */
+/* let header_content_key = HistoryContentKey::BlockHeaderWithProof(BlockHeaderKey { */
+/* block_hash: block_tuple.header.header.hash().0, */
+/* }); */
+/* let body_content_key = HistoryContentKey::BlockBody(BlockBodyKey { */
+/* block_hash: block_tuple.header.header.hash().0, */
+/* }); */
+/* let receipts_content_key = HistoryContentKey::BlockReceipts(BlockReceiptsKey { */
+/* block_hash: block_tuple.header.header.hash().0, */
+/* }); */
+/* let body = HistoryContentValue::BlockBody(block_tuple.body.body.clone()).encode(); */
+/* println!( */
+/* "header content_id: {}", */
+/* ethportal_api::utils::bytes::hex_encode(header_content_key.content_id()) */
+/* ); */
+/* println!( */
+/* "body content_id: {}", */
+/* ethportal_api::utils::bytes::hex_encode(body_content_key.content_id()) */
+/* ); */
+/* println!( */
+/* "receipts content_id: {}", */
+/* ethportal_api::utils::bytes::hex_encode(receipts_content_key.content_id()) */
+/* ); */
+/* let header = HistoryContentValue::BlockHeaderWithProof( */
+/* construct_proof(block_tuple.header.header.clone(), &epoch_acc) */
+/* .await */
+/* .unwrap(), */
+/* ); */
+/* let header = header.encode(); */
+/* println!("header - {} ", header.len()); */
+/* // write raw bytes to file */
+/* let path = PathBuf::from("header_15040641"); */
+/* //std::fs::write(path, header).unwrap(); */
+/* println!("body - {} ", body.len()); */
+/* // write raw bytes to file */
+/* let path = PathBuf::from("body_15040641"); */
+/* //std::fs::write(path, body).unwrap(); */
+/* let receipts = */
+/* HistoryContentValue::Receipts(block_tuple.receipts.receipts.clone()).encode(); */
+/* println!("receipts - {} ", receipts.len()); */
+/* // write raw bytes to file */
+/* let path = PathBuf::from("receipts_15040641"); */
+/* //std::fs::write(path, receipts).unwrap(); */
+/* break; */
+/* } */
+
+/* [> let number = block_tuple.header.header.number; <] */
+/* [> println!("{:?}", number); <] */
+/* [> let header = HistoryContentValue::BlockHeaderWithProof(construct_proof( <] */
+/* [> block_tuple.header.header.clone(), <] */
+/* [> &epoch_acc, <] */
+/* [> ).await.unwrap()); <] */
+/* [> let header = header.encode(); <] */
+/* [> println!("- header size bytes: {}", header.len()); <] */
+/* [> let body = HistoryContentValue::BlockBody(block_tuple.body.body.clone()).encode(); <] */
+/* [> println!("- body size bytes: {}", body.len()); <] */
+/* let receipts =
+ * HistoryContentValue::Receipts(block_tuple.receipts.receipts.clone()).encode(); */
+/* [> println!("- receipts size bytes: {}", receipts.len()); <] */
+/* [> let size = body.len() + receipts.len(); <] */
+/* [> if largest_10_values.len() < 10 { <] */
+/* [> largest_10_values.push((number, size)); <] */
+/* [> largest_10_values.sort_by(|a, b| b.1.cmp(&a.1)); <] */
+/* [> } else if size > largest_10_values[9].1 { <] */
+/* [> largest_10_values.pop(); <] */
+/* [> largest_10_values.push((number, size)); <] */
+/* [> largest_10_values.sort_by(|a, b| b.1.cmp(&a.1)); <] */
+/* [> } <] */
+/* [> if number > 15041512 { <] */
+/* [> break; <] */
+/* [> } <] */
+/* } */
+/* assert!(false); */
+/* } */
+//}
