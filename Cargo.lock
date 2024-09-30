@@ -4281,6 +4281,7 @@ dependencies = [
  "ethereum_ssz",
  "ethportal-api",
  "futures",
+ "hashbrown 0.14.5",
  "jsonrpsee",
  "portalnet",
  "prometheus_exporter",

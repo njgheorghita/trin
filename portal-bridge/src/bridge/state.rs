@@ -1,7 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use alloy_rlp::Decodable;
-use eth_trie::{decode_node, node::Node, RootWithTrieDiff};
+use eth_trie::{decode_node, node::Node};
 use ethportal_api::{
     jsonrpsee::http_client::HttpClient,
     types::{portal_wire::OfferTrace, state_trie::account_state::AccountState as AccountStateInfo},
@@ -10,6 +13,7 @@ use ethportal_api::{
 };
 use revm::Database;
 use revm_primitives::{keccak256, Bytecode, SpecId, B256};
+use hashbrown::HashMap as BrownHashMap;
 use tokio::{
     sync::{mpsc, OwnedSemaphorePermit, Semaphore},
     time::timeout,
@@ -17,12 +21,14 @@ use tokio::{
 use tracing::{debug, enabled, error, info, warn, Level};
 use trin_evm::spec_id::get_spec_block_number;
 use trin_execution::{
+    cli::ImportStateConfig,
     config::StateConfig,
     content::{
         create_account_content_key, create_account_content_value, create_contract_content_key,
         create_contract_content_value, create_storage_content_key, create_storage_content_value,
     },
     execution::TrinExecution,
+    subcommands::era2::import::StateImporter,
     trie_walker::TrieWalker,
     types::{block_to_trace::BlockToTrace, trie_proof::TrieProof},
     utils::full_nibble_path_to_address_hash,
@@ -71,29 +77,82 @@ impl StateBridge {
 
     pub async fn launch(&self) {
         info!("Launching state bridge: {:?}", self.mode);
-        let (start_block, end_block) = match self.mode.clone() {
+        match self.mode.clone() {
             // TODO: This should only gossip state trie at this block
-            BridgeMode::Single(ModeType::Block(block)) => (0, block),
-            BridgeMode::Single(ModeType::BlockRange(start_block, end_block)) => (start_block, end_block),
+            BridgeMode::Single(ModeType::Block(block)) => self.launch_block_range(0, block).await.unwrap(),
+            BridgeMode::Single(ModeType::BlockRange(start_block, end_block)) => self.launch_block_range(start_block, end_block).await.unwrap(),
+            BridgeMode::Era2((path, start_block)) => self.launch_era2(path, start_block).await.unwrap(),
             _ => panic!("State bridge only supports 'single' mode, for single block (implies 0..=block range) or range of blocks."),
         };
-
-        if end_block > get_spec_block_number(SpecId::MERGE) {
-            panic!(
-                "State bridge only supports blocks up to {} for the time being.",
-                get_spec_block_number(SpecId::MERGE)
-            );
-        }
-
-        self.launch_state(start_block, end_block)
-            .await
-            .expect("State bridge failed");
         info!("Bridge mode: {:?} complete.", self.mode);
     }
 
-    async fn launch_state(&self, start_block: u64, end_block: u64) -> anyhow::Result<()> {
+    async fn launch_era2(&self, path: PathBuf, start_block: Option<u64>) -> anyhow::Result<()> {
+        // parse path for start block
+        // path format ...
+        // /path/to/<network-name>-<block_number>-<short-state-root>.era2
+        let era2_start_block = path
+            .file_name()
+            .expect("to have a file name")
+            .to_str()
+            .expect("to be a valid string")
+            .split('-')
+            .nth(1)
+            .expect("to have a second element")
+            .parse::<u64>()
+            .expect("to be a valid u64");
+
         let temp_directory = create_temp_dir("trin-bridge-state", None)?;
 
+        let state_config = StateConfig {
+            cache_contract_storage_changes: true,
+            block_to_trace: BlockToTrace::None,
+        };
+        let import_state_config = ImportStateConfig {
+            path_to_era2: path,
+        };
+        let trin_execution = TrinExecution::new(temp_directory.path(), state_config).await?;
+        let mut state_importer = StateImporter::new(trin_execution, import_state_config);
+        state_importer.import_state()?;
+        state_importer.import_last_256_block_hashes().await?;
+        //
+        // gossip era2 file....
+        //
+        
+        let mut trin_execution = state_importer.trin_execution;
+        let start_block = match start_block {
+            Some(block) => {
+                if block < era2_start_block {
+                    panic!("Block to gossip must be greater than or equal to the era2 start block.");
+                }
+                block
+            }
+            None => {
+                let root = trin_execution.get_root()?;
+                let trie_walker = TrieWalker::new(root, BrownHashMap::new());
+                self.gossip_trie_diff(trie_walker, &mut trin_execution)
+                    .await?;
+
+                era2_start_block
+            }
+        };
+
+        let end_block = get_spec_block_number(SpecId::MERGE);
+        self.launch_state(start_block, end_block, &mut trin_execution).await?;
+
+        temp_directory.close()?;
+        Ok(())
+    }
+
+    async fn launch_block_range(&self, start_block: u64, end_block: u64) -> anyhow::Result<()> {
+        if end_block > get_spec_block_number(SpecId::MERGE) {
+            return Err(anyhow::anyhow!(
+                "State bridge only supports blocks up to {} for the time being.",
+                get_spec_block_number(SpecId::MERGE))
+            );
+        }
+
+        let temp_directory = create_temp_dir("trin-bridge-state", None)?;
         // Enable contract storage changes caching required for gossiping the storage trie
         let state_config = StateConfig {
             cache_contract_storage_changes: true,
@@ -101,7 +160,16 @@ impl StateBridge {
         };
         let mut trin_execution = TrinExecution::new(temp_directory.path(), state_config).await?;
 
-        if start_block > 0 {
+        self.launch_state(start_block, end_block, &mut trin_execution)
+            .await
+            .expect("State bridge failed");
+        temp_directory.close()?;
+        Ok(())
+    }
+
+    async fn launch_state(&self, start_block: u64, end_block: u64, trin_execution: &mut TrinExecution) -> anyhow::Result<()> {
+        let current_block = trin_execution.next_block_number() - 1;
+        if start_block > current_block {
             info!("Executing up to block: {}", start_block - 1);
             trin_execution
                 .process_range_of_blocks(start_block - 1, None)
@@ -109,6 +177,9 @@ impl StateBridge {
             // flush the database cache
             trin_execution.database.storage_cache.clear();
         }
+
+        // assert that the current block is the start block
+        assert_eq!(trin_execution.next_block_number(), start_block);
 
         info!("Gossiping state data from block {start_block} to {end_block} (inclusively)");
         while trin_execution.next_block_number() <= end_block {
@@ -124,7 +195,8 @@ impl StateBridge {
 
             let root_with_trie_diff = trin_execution.process_next_block().await?;
 
-            self.gossip_trie_diff(root_with_trie_diff, &mut trin_execution)
+            let walk_diff = TrieWalker::new(root_with_trie_diff.root, root_with_trie_diff.trie_diff);
+            self.gossip_trie_diff(walk_diff, trin_execution)
                 .await?;
         }
 
@@ -134,13 +206,13 @@ impl StateBridge {
             .expect("to acquire lock")
             .report();
 
-        temp_directory.close()?;
         Ok(())
     }
 
     async fn gossip_trie_diff(
         &self,
-        root_with_trie_diff: RootWithTrieDiff,
+        //root_with_trie_diff: RootWithTrieDiff,
+        walk_diff: TrieWalker,
         trin_execution: &mut TrinExecution,
     ) -> anyhow::Result<()> {
         let block_hash = trin_execution
@@ -151,8 +223,6 @@ impl StateBridge {
             .await?
             .header
             .hash();
-
-        let walk_diff = TrieWalker::new(root_with_trie_diff.root, root_with_trie_diff.trie_diff);
 
         // gossip block's new state transitions
         for node in walk_diff.nodes.keys() {

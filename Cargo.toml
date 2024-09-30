@@ -96,6 +96,7 @@ ethereum_ssz = "0.7.1"
 ethereum_ssz_derive = "0.7.1"
 ethportal-api = { path = "ethportal-api" }
 futures = "0.3.23"
+hashbrown = "0.14.0"
 hex = "0.4.3"
 jsonrpsee = "0.24.4"
 keccak-hash = "0.10.0"

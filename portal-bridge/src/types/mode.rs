@@ -18,6 +18,7 @@ use trin_validation::constants::EPOCH_SIZE;
 pub enum BridgeMode {
     #[default]
     Latest,
+    Era2((PathBuf, Option<u64>)),
     FourFours(FourFoursMode),
     Backfill(ModeType),
     Single(ModeType),
@@ -41,6 +42,9 @@ impl BridgeMode {
             }
             BridgeMode::Test(_) => {
                 return Err(anyhow!("BridgeMode `test` does not have a block range"))
+            }
+            BridgeMode::Era2(_) => {
+                return Err(anyhow!("BridgeMode `era2` does not have a block range"))
             }
         };
         let (start, end) = match mode_type.clone() {
@@ -100,6 +104,23 @@ impl FromStr for BridgeMode {
                         let path =
                             PathBuf::from_str(&val[1..]).map_err(|_| "Invalid test asset path")?;
                         Ok(BridgeMode::Test(path))
+                    }
+                    "era2" => {
+                        if val.contains(':') {
+                            let mut split = val.split(':');
+                            let path = PathBuf::from_str(split.next().unwrap())
+                                .map_err(|_| "Invalid era2 asset path")?;
+                            let start_block = split
+                                .next()
+                                .unwrap()
+                                .parse()
+                                .map_err(|_| "Invalid era2 asset era")?;
+                            Ok(BridgeMode::Era2((path, Some(start_block))))
+                        } else {
+                            let path = PathBuf::from_str(&val[1..])
+                                .map_err(|_| "Invalid era2 asset path")?;
+                            Ok(BridgeMode::Era2((path, None)))
+                        }
                     }
                     _ => Err("Invalid bridge mode arg: type prefix".to_string()),
                 }

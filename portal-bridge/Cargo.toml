@@ -25,6 +25,7 @@ eth_trie.workspace = true
 ethereum_ssz.workspace = true
 ethportal-api.workspace = true
 futures.workspace = true
+hashbrown.workspace = true
 jsonrpsee = { workspace = true, features = [
   "async-client",
   "client",
