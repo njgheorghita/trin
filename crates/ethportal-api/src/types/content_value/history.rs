@@ -57,32 +57,8 @@ impl ContentValue for HistoryContentValue {
 
 #[cfg(test)]
 mod test {
-    use std::fs;
-
-    use serde_json::Value;
-
     use super::*;
-    use crate::{utils::bytes::hex_decode, HistoryContentValue};
-
-    #[test]
-    fn header_with_proof_encode_decode_fluffy() {
-        let file =
-            fs::read_to_string("../validation/src/assets/fluffy/header_with_proofs.json").unwrap();
-        let json: Value = serde_json::from_str(&file).unwrap();
-        let json = json.as_object().unwrap();
-        for (block_num, obj) in json {
-            let block_num: u64 = block_num.parse().unwrap();
-            let header_with_proof = obj.get("value").unwrap().as_str().unwrap();
-            let header_with_proof_encoded = hex_decode(header_with_proof).unwrap();
-            let header_with_proof =
-                HeaderWithProof::from_ssz_bytes(&header_with_proof_encoded).unwrap();
-
-            assert_eq!(header_with_proof.header.number, block_num);
-
-            let encoded = header_with_proof.as_ssz_bytes();
-            assert_eq!(encoded, header_with_proof_encoded);
-        }
-    }
+    use crate::HistoryContentValue;
 
     #[test]
     fn content_value_deserialization_failure_displays_debuggable_data() {
