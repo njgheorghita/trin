@@ -20,6 +20,29 @@ impl HistoricalRootsAccumulator {
 
         Self { historical_roots }
     }
+
+    pub fn construct_proof(&self, header: Header) -> anyhow::Result<BlockProofHistoricalRoots> {
+        let epoch_index = self.get_epoch_index_of_header(&header);
+        let historical_roots = historical_roots_acc.historical_roots;
+        let historical_root = historical_roots
+            .get_epoch_root(epoch_index)
+            .ok_or_else(|| anyhow!("Epoch root not found"))?;
+        let beacon_block_proof = BeaconBlockProofHistoricalRoots::construct_proof(
+            header.beacon_block_root,
+            historical_root,
+        )?;
+        let execution_block_proof = ExecutionBlockProof::construct_proof(
+            header.execution_block_hash,
+            header.execution_block_number,
+            header.execution_parent_hash,
+        )?;
+        Ok(BlockProofHistoricalRoots {
+            beacon_block_proof,
+            beacon_block_root: header.beacon_block_root,
+            execution_block_proof,
+            slot: header.slot,
+        })
+    }
 }
 
 impl Default for HistoricalRootsAccumulator {

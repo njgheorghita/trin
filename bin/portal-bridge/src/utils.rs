@@ -9,8 +9,8 @@ use anyhow::{anyhow, bail};
 use chrono::Duration;
 use discv5::enr::{CombinedKey, Enr, NodeId};
 use ethportal_api::{
-    utils::bytes::hex_encode, BeaconContentKey, BeaconContentValue, ContentValue,
-    HistoryContentKey, HistoryContentValue, RawContentValue,
+    types::content_value::history_new::HistoryContentValue, utils::bytes::hex_encode,
+    BeaconContentKey, BeaconContentValue, ContentValue, HistoryContentKey, RawContentValue,
 };
 use serde::{Deserialize, Serialize};
 

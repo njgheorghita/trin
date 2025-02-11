@@ -350,7 +350,7 @@ pub async fn test_offer_concurrent_utp_transfer_limit(peertest: &Peertest, targe
     // store headers for validation
     for tuple in tuples.clone() {
         let header_key = HistoryContentKey::new_block_header_by_hash(tuple.header.header.hash());
-        let header_value = HistoryContentValue::BlockHeaderWithProof(
+        let header_value = ethportal_api::types::content_value::history_new::HistoryContentValue::BlockHeaderWithProof(
             construct_proof(tuple.header.header.clone(), &epoch_acc)
                 .await
                 .unwrap(),

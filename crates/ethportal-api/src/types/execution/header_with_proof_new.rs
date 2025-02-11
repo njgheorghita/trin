@@ -49,6 +49,12 @@ pub enum BlockHeaderProof {
     HistoricalSummaries(BlockProofHistoricalSummaries),
 }
 
+impl Default for BlockHeaderProof {
+    fn default() -> Self {
+        BlockHeaderProof::HistoricalHashes(FixedVector::from_elem(B256::default()))
+    }
+}
+
 impl ssz::Decode for HeaderWithProof {
     fn is_ssz_fixed_len() -> bool {
         false

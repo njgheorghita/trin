@@ -1,30 +1,26 @@
-use std::sync::Arc;
-
 use alloy::primitives::B256;
 use anyhow::{anyhow, bail};
 use ethportal_api::{
     types::{
+        content_value::history_new::HistoryContentValue,
         execution::{
             accumulator::EpochAccumulator,
             block_body::{
                 BlockBody, BlockBodyLegacy, BlockBodyMerge, BlockBodyShanghai, MERGE_TIMESTAMP,
                 SHANGHAI_TIMESTAMP,
             },
-            header_with_proof::{BlockHeaderProof, HeaderWithProof, SszNone},
+            header_with_proof_new::{BlockHeaderProof, HeaderWithProof},
         },
         jsonrpc::{params::Params, request::JsonRequest},
     },
     utils::bytes::{hex_decode, hex_encode},
-    Header, HistoryContentKey, HistoryContentValue, Receipts,
+    Header, HistoryContentKey, Receipts,
 };
 use futures::future::join_all;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 use tracing::{debug, error, warn};
-use trin_validation::{
-    accumulator::PreMergeAccumulator, constants::MERGE_BLOCK_NUMBER,
-    header_validator::HeaderValidator,
-};
+use trin_validation::{accumulator::PreMergeAccumulator, header_validator::HeaderValidator};
 use url::Url;
 
 use crate::{
@@ -77,12 +73,10 @@ impl ExecutionApi {
     pub async fn get_header(
         &self,
         height: u64,
-        epoch_acc: Option<Arc<EpochAccumulator>>,
     ) -> anyhow::Result<(
         FullHeader,
         HistoryContentKey, // BlockHeaderByHash
         HistoryContentKey, // BlockHeaderByNumber
-        HistoryContentValue,
     )> {
         // Geth requires block numbers to be formatted using the following padding.
         let block_param = format!("0x{height:01X}");
@@ -92,49 +86,22 @@ impl ExecutionApi {
         let result = response
             .get("result")
             .ok_or_else(|| anyhow!("Unable to fetch header for block: {height:?}"))?;
-        let mut full_header: FullHeader = FullHeader::try_from(result.clone())?;
-
-        // Add epoch accumulator to header if it's a pre-merge block.
-        if full_header.header.number < MERGE_BLOCK_NUMBER {
-            if epoch_acc.is_none() {
-                bail!("Epoch accumulator is required for pre-merge blocks");
-            }
-            full_header.epoch_acc = epoch_acc;
-        }
+        let full_header: FullHeader = FullHeader::try_from(result.clone())?;
 
         // Validate header.
-        if let Err(msg) = full_header.validate() {
-            bail!("Header validation failed: {msg}");
-        };
+        //if let Err(msg) = full_header.validate() {
+        //bail!("Header validation failed: {msg}");
+        //};
         // Construct header by hash content key / value pair.
         let header_by_hash_content_key =
             HistoryContentKey::new_block_header_by_hash(full_header.header.hash());
         // Construct header by number content key / value pair.
         let header_by_number_content_key =
             HistoryContentKey::new_block_header_by_number(full_header.header.number);
-        let content_value = match &full_header.epoch_acc {
-            Some(epoch_acc) => {
-                // Construct HeaderWithProof
-                let header_with_proof =
-                    construct_proof(full_header.header.clone(), epoch_acc).await?;
-                // Double check that the proof is valid
-                self.header_validator
-                    .validate_header_with_proof(&header_with_proof)?;
-                HistoryContentValue::BlockHeaderWithProof(header_with_proof)
-            }
-            None => {
-                let header_with_proof = HeaderWithProof {
-                    header: full_header.header.clone(),
-                    proof: BlockHeaderProof::None(SszNone { value: None }),
-                };
-                HistoryContentValue::BlockHeaderWithProof(header_with_proof)
-            }
-        };
         Ok((
             full_header,
             header_by_hash_content_key,
             header_by_number_content_key,
-            content_value,
         ))
     }
 
@@ -394,13 +361,25 @@ impl ExecutionApi {
 }
 
 /// Create a proof for the given header / epoch acc
-pub async fn construct_proof(
+pub async fn construct_pre_merge_proof(
     header: Header,
     epoch_acc: &EpochAccumulator,
 ) -> anyhow::Result<HeaderWithProof> {
     let proof = PreMergeAccumulator::construct_proof(&header, epoch_acc)?;
-    let proof = BlockHeaderProof::PreMergeAccumulatorProof(proof);
+    let proof = BlockHeaderProof::HistoricalHashes(proof);
     Ok(HeaderWithProof { header, proof })
+}
+
+pub async fn construct_pre_merge_post_capella_proof(
+    header: Header,
+)-> anyhow::Result<HeaderWithProof> {
+    bail!("xx")
+}
+
+pub async fn construct_post_merge_proof(
+    header: Header,
+) -> anyhow::Result<HeaderWithProof> {
+    bail!("xx")
 }
 
 /// Check that provider is valid and accessible.

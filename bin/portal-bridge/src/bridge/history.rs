@@ -3,8 +3,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use anyhow::bail;
 use ethportal_api::{
-    jsonrpsee::http_client::HttpClient, types::execution::accumulator::EpochAccumulator,
+    consensus::historical_summaries::HistoricalSummaries,
+    jsonrpsee::http_client::HttpClient,
+    types::{
+        content_value::history_new::HistoryContentValue, execution::accumulator::EpochAccumulator,
+    },
     HistoryContentKey,
 };
 use futures::future::join_all;
@@ -16,12 +21,15 @@ use tokio::{
 use tracing::{debug, error, info, warn, Instrument};
 use trin_metrics::bridge::BridgeMetricsReporter;
 use trin_validation::{
-    constants::{EPOCH_SIZE, MERGE_BLOCK_NUMBER},
+    constants::{EPOCH_SIZE, MERGE_BLOCK_NUMBER, SHANGHAI_BLOCK_NUMBER},
     oracle::HeaderOracle,
 };
 
 use crate::{
-    api::execution::ExecutionApi,
+    api::{
+        consensus::ConsensusApi,
+        execution::{construct_pre_merge_proof, ExecutionApi, construct_pre_merge_post_capella_proof, construct_post_capella_proof},
+    },
     bridge::utils::lookup_epoch_acc,
     put_content::gossip_history_content,
     stats::{HistoryBlockStats, StatsReporter},
@@ -39,6 +47,7 @@ pub struct HistoryBridge {
     pub mode: BridgeMode,
     pub portal_client: HttpClient,
     pub execution_api: ExecutionApi,
+    pub consensus_api: ConsensusApi,
     pub header_oracle: HeaderOracle,
     pub epoch_acc_path: PathBuf,
     pub metrics: BridgeMetricsReporter,
@@ -51,6 +60,7 @@ impl HistoryBridge {
     pub fn new(
         mode: BridgeMode,
         execution_api: ExecutionApi,
+        consensus_api: ConsensusApi,
         portal_client: HttpClient,
         header_oracle: HeaderOracle,
         epoch_acc_path: PathBuf,
@@ -62,6 +72,7 @@ impl HistoryBridge {
             mode,
             portal_client,
             execution_api,
+            consensus_api,
             header_oracle,
             epoch_acc_path,
             metrics,
@@ -110,10 +121,16 @@ impl HistoryBridge {
         let mut block_index = self.execution_api.get_latest_block_number().await.expect(
             "Error launching bridge in latest mode. Unable to get latest block from provider.",
         );
+
+        // start back an epoch so we don't have to deal with ephemeral headers
+        block_index -= 8192;
+
         // If a provider returns the same block number and doesn't time out over and over.
         // this indicates the provider is no longer in sync with the chain so we want to long an
         // error
         let mut last_seen_block_counter = 0;
+        // used to for xxxx
+        let mut historical_summaries = HistoricalSummaries::default();
         loop {
             sleep(Duration::from_secs(LATEST_BLOCK_POLL_RATE)).await;
             // If get_latest_block_number(), it is an indiction there is a deadlock bug somewhere in
@@ -260,15 +277,32 @@ impl HistoryBridge {
     ) -> anyhow::Result<()> {
         info!("Serving block: {height}");
         let timer = metrics.start_process_timer("construct_and_gossip_header");
-        let (
-            full_header,
-            header_by_hash_content_key,
-            header_by_number_content_key,
-            header_content_value,
-        ) = execution_api.get_header(height, epoch_acc).await?;
+        let (full_header, header_by_hash_content_key, header_by_number_content_key) =
+            execution_api.get_header(height).await?;
         let block_stats = Arc::new(Mutex::new(HistoryBlockStats::new(
             full_header.header.number,
         )));
+
+        // ok this is where we need to generate the header with proof
+        let header_content_value = if height <= MERGE_BLOCK_NUMBER {
+            if let Some(epoch_acc) = epoch_acc {
+                let header_with_proof =
+                    construct_pre_merge_proof(full_header.header.clone(), epoch_acc.as_ref()).await?;
+                // todo? double check proof validity
+                HistoryContentValue::BlockHeaderWithProof(header_with_proof)
+            } else {
+                // change to bail
+                panic!("Error validating pre-merge header: epoch_acc is missing");
+            }
+        } else if height <= SHANGHAI_BLOCK_NUMBER {
+            let header_with_proof =
+                construct_pre_merge_post_capella_proof(full_header.header.clone()).await?;
+            HistoryContentValue::BlockHeaderWithProof(header_with_proof)
+        } else {
+            let header_with_proof =
+                construct_post_capella_proof(full_header.header.clone()).await?;
+            HistoryContentValue::BlockHeaderWithProof(header_with_proof)
+        };
 
         debug!("Built and validated HeaderWithProof for Block #{height:?}: now gossiping.");
         if let Err(msg) = gossip_history_content(

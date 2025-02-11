@@ -11,8 +11,11 @@ use e2store::{
     utils::get_shuffled_era1_files,
 };
 use ethportal_api::{
-    jsonrpsee::http_client::HttpClient, types::execution::accumulator::EpochAccumulator,
-    HistoryContentKey, HistoryContentValue, HistoryNetworkApiClient,
+    jsonrpsee::http_client::HttpClient,
+    types::{
+        content_value::history_new::HistoryContentValue, execution::accumulator::EpochAccumulator,
+    },
+    HistoryContentKey, HistoryNetworkApiClient,
 };
 use futures::future::join_all;
 use rand::{seq::SliceRandom, thread_rng};

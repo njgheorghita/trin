@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use ethportal_api::{
-    types::portal::TracePutContentInfo, BeaconContentKey, BeaconContentValue,
-    BeaconNetworkApiClient, ContentValue, HistoryContentKey, HistoryContentValue,
+    types::{content_value::history_new::HistoryContentValue, portal::TracePutContentInfo},
+    BeaconContentKey, BeaconContentValue, BeaconNetworkApiClient, ContentValue, HistoryContentKey,
     HistoryNetworkApiClient, OverlayContentKey,
 };
 use jsonrpsee::http_client::HttpClient;
