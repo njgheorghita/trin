@@ -48,6 +48,7 @@ ssz_types.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tree_hash.workspace = true
 trin-evm.workspace = true
 trin-execution.workspace = true
 trin-metrics.workspace = true

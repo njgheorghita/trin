@@ -1,7 +1,12 @@
+use crate::constants::EPOCH_SIZE;
+use alloy::primitives::B256;
 use ethportal_api::consensus::beacon_state::HistoricalRoots;
+use ethportal_api::types::execution::header_with_proof_new::BeaconBlockProofHistoricalRoots;
 use ssz::{Decode, Encode};
+use ssz_types::{typenum, FixedVector};
 use tree_hash::{Hash256, PackedEncoding, TreeHash, TreeHashType};
 
+use crate::merkle::proof::MerkleTree;
 use crate::TrinValidationAssets;
 
 /// The frozen historical roots accumulator from beacon state. It is used to verify the
@@ -19,6 +24,30 @@ impl HistoricalRootsAccumulator {
             .expect("Unable to decode default historical roots accumulator");
 
         Self { historical_roots }
+    }
+
+    pub fn construct_proof(
+        &self,
+        slot: u64,
+        block_hash: B256,
+    ) -> anyhow::Result<BeaconBlockProofHistoricalRoots> {
+        println!("len of historical roots: {}", self.historical_roots.len());
+        if self.historical_roots.contains(&block_hash) {
+            return Err(anyhow::anyhow!("Block hash is already in historical roots"));
+        }
+        // if block is not in merge-capella range, panic
+
+        let block_root_index = slot % EPOCH_SIZE;
+        let gen_index = 2 * EPOCH_SIZE + block_root_index;
+
+        let merkle_tree = MerkleTree::create(&self.historical_roots, 14);
+        let (leaf, proof) = merkle_tree
+            .generate_proof(gen_index as usize, 14)
+            .map_err(|e| anyhow::anyhow!("Failed to generate proof: {:?}", e))?;
+
+        //assert_eq!(leaf, block_hash);
+        let proof: FixedVector<Hash256, typenum::U14> = proof.into();
+        Ok(proof)
     }
 }
 

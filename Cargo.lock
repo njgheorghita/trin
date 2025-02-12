@@ -4391,6 +4391,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+ "tree_hash",
  "trin-evm",
  "trin-execution",
  "trin-metrics",

@@ -261,22 +261,23 @@ impl SlotIndexBlockEntry {
 impl TryFrom<&Entry> for SlotIndexBlockEntry {
     type Error = anyhow::Error;
 
+    // xxx todo... i'm not sure we can deserialize all the era files at the borders
     fn try_from(entry: &Entry) -> Result<Self, Self::Error> {
         ensure!(
             entry.header.type_ == 0x3269,
-            "invalid slot index entry: incorrect header type"
+            "invalid slot block index entry: incorrect header type"
         );
         ensure!(
             entry.header.length == SlotIndexBlock::SERIALIZED_SIZE as u32,
-            "invalid slot index entry: incorrect header length"
+            "invalid slot block index entry: incorrect header length"
         );
         ensure!(
             entry.header.reserved == 0,
-            "invalid slot index entry: incorrect header reserved bytes"
+            "invalid slot block index entry: incorrect header reserved bytes"
         );
         ensure!(
             entry.value.len() == SlotIndexBlock::SERIALIZED_SIZE,
-            "invalid slot index entry: incorrect value length"
+            "invalid slot block index entry: incorrect value length"
         );
         Ok(Self {
             slot_index: SlotIndexBlock::try_from(entry.clone())?,
@@ -349,19 +350,19 @@ impl TryFrom<&Entry> for SlotIndexStateEntry {
     fn try_from(entry: &Entry) -> Result<Self, Self::Error> {
         ensure!(
             entry.header.type_ == 0x3269,
-            "invalid slot index entry: incorrect header type"
+            "invalid slot state index entry: incorrect header type"
         );
         ensure!(
             entry.header.length == 24,
-            "invalid slot index entry: incorrect header length"
+            "invalid slot state index entry: incorrect header length"
         );
         ensure!(
             entry.header.reserved == 0,
-            "invalid slot index entry: incorrect header reserved bytes"
+            "invalid slot state index entry: incorrect header reserved bytes"
         );
         ensure!(
             entry.value.len() == 24,
-            "invalid slot index entry: incorrect value length"
+            "invalid slot state index entry: incorrect value length"
         );
         Ok(Self {
             slot_index: SlotIndexState::try_from(entry.clone())?,

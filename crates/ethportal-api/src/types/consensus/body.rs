@@ -122,7 +122,8 @@ impl BeaconBlockBodyBellatrix {
 
     pub fn build_execution_block_hash_proof(&self) -> Vec<B256> {
         let mut block_hash_proof = self.execution_payload.build_block_hash_proof();
-        block_hash_proof.extend(self.build_execution_payload_proof());
+        let execution_payload_proof = self.build_execution_payload_proof();
+        block_hash_proof.extend(execution_payload_proof);
         block_hash_proof
     }
 }
