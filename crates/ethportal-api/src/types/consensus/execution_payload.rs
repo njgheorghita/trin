@@ -90,6 +90,43 @@ impl ExecutionPayload {
     }
 }
 
+impl ExecutionPayloadCapella {
+    pub fn build_block_hash_proof(&self) -> Vec<B256> {
+        let mut leaves: Vec<[u8; 32]> = vec![
+            self.parent_hash.tree_hash_root().0,
+            self.fee_recipient.tree_hash_root().0,
+            self.state_root.tree_hash_root().0,
+            self.receipts_root.tree_hash_root().0,
+            self.logs_bloom.tree_hash_root().0,
+            self.prev_randao.tree_hash_root().0,
+            self.block_number.tree_hash_root().0,
+            self.gas_limit.tree_hash_root().0,
+            self.gas_used.tree_hash_root().0,
+            self.timestamp.tree_hash_root().0,
+            self.extra_data.tree_hash_root().0,
+            self.base_fee_per_gas.tree_hash_root().0,
+            self.block_hash.tree_hash_root().0,
+            self.transactions.tree_hash_root().0,
+            self.withdrawals.tree_hash_root().0,
+        ];
+        // We want to add empty leaves to make the tree a power of 2
+        while leaves.len() < 16 {
+            leaves.push([0; 32]);
+        }
+
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let indices_to_prove = vec![12];
+        let proof = merkle_tree.proof(&indices_to_prove);
+        let proof_hashes: Vec<B256> = proof
+            .proof_hashes()
+            .iter()
+            .map(|hash| B256::from_slice(hash))
+            .collect();
+
+        proof_hashes
+    }
+}
+
 impl ExecutionPayloadBellatrix {
     pub fn build_block_hash_proof(&self) -> Vec<B256> {
         let mut leaves: Vec<[u8; 32]> = vec![

@@ -87,6 +87,50 @@ impl BeaconBlockBody {
     }
 }
 
+impl BeaconBlockBodyCapella {
+    pub fn build_execution_payload_proof(&self) -> Vec<B256> {
+        let mut leaves: Vec<[u8; 32]> = vec![
+            self.randao_reveal.tree_hash_root().0,
+            self.eth1_data.tree_hash_root().0,
+            self.graffiti.tree_hash_root().0,
+            self.proposer_slashings.tree_hash_root().0,
+            self.attester_slashings.tree_hash_root().0,
+            self.attestations.tree_hash_root().0,
+            self.deposits.tree_hash_root().0,
+            self.voluntary_exits.tree_hash_root().0,
+            self.sync_aggregate.tree_hash_root().0,
+            self.execution_payload.tree_hash_root().0,
+            self.bls_to_execution_changes.tree_hash_root().0,
+        ];
+        // We want to add empty leaves to make the tree a power of 2
+        while leaves.len() < 16 {
+            leaves.push([0; 32]);
+        }
+
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+
+        // We want to prove the 10th leaf
+        let indices_to_prove = vec![9];
+        let proof = merkle_tree.proof(&indices_to_prove);
+        let proof_hashes: Vec<B256> = proof
+            .proof_hashes()
+            .iter()
+            .map(|hash| B256::from_slice(hash))
+            .collect();
+
+        proof_hashes
+    }
+
+    pub fn build_execution_block_hash_proof(&self) -> Vec<B256> {
+        let mut block_hash_proof = self.execution_payload.build_block_hash_proof();
+        println!("block_hash_proof: {:?}", block_hash_proof);
+        let execution_payload_proof = self.build_execution_payload_proof();
+        println!("execution_payload_proof: {:?}", execution_payload_proof);
+        block_hash_proof.extend(execution_payload_proof);
+        block_hash_proof
+    }
+}
+
 impl BeaconBlockBodyBellatrix {
     pub fn build_execution_payload_proof(&self) -> Vec<B256> {
         let mut leaves: Vec<[u8; 32]> = vec![
@@ -122,8 +166,7 @@ impl BeaconBlockBodyBellatrix {
 
     pub fn build_execution_block_hash_proof(&self) -> Vec<B256> {
         let mut block_hash_proof = self.execution_payload.build_block_hash_proof();
-        let execution_payload_proof = self.build_execution_payload_proof();
-        block_hash_proof.extend(execution_payload_proof);
+        block_hash_proof.extend(self.build_execution_payload_proof());
         block_hash_proof
     }
 }

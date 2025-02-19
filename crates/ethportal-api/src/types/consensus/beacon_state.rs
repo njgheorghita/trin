@@ -162,6 +162,83 @@ impl BeaconState {
     }
 }
 
+impl BeaconStateCapella {
+    pub fn build_block_root_proof(&self, block_root_index: u64) -> Vec<B256> {
+        // Build block hash proof for self.block_roots
+        let leaves: Vec<[u8; 32]> = self
+            .block_roots
+            .iter()
+            .map(|root| root.tree_hash_root().0)
+            .collect();
+
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let indices_to_prove = vec![block_root_index as usize];
+        let proof = merkle_tree.proof(&indices_to_prove);
+        let mut proof_hashes: Vec<B256> = proof
+            .proof_hashes()
+            .iter()
+            .map(|hash| B256::from_slice(hash))
+            .collect();
+
+        /*// To generate proof for block root anchored to the historical batch tree_hash_root, we need*/
+        /*// to add the self.state_root tree_hash_root to the proof_hashes*/
+        /*        proof_hashes.push(self.state_roots.tree_hash_root());*/
+
+        /*// Proof len should always be 14*/
+        /*assert_eq!(proof_hashes.len(), 14);*/
+
+        proof_hashes
+    }
+
+    pub fn build_historical_summaries_proof(&self) -> Vec<B256> {
+        let mut leaves: Vec<[u8; 32]> = vec![
+            self.genesis_time.tree_hash_root().0,
+            self.genesis_validators_root.tree_hash_root().0,
+            self.slot.tree_hash_root().0,
+            self.fork.tree_hash_root().0,
+            self.latest_block_header.tree_hash_root().0,
+            self.block_roots.tree_hash_root().0,
+            self.state_roots.tree_hash_root().0,
+            self.historical_roots.tree_hash_root().0,
+            self.eth1_data.tree_hash_root().0,
+            self.eth1_data_votes.tree_hash_root().0,
+            self.eth1_deposit_index.tree_hash_root().0,
+            self.validators.tree_hash_root().0,
+            self.balances.tree_hash_root().0,
+            self.randao_mixes.tree_hash_root().0,
+            self.slashings.tree_hash_root().0,
+            self.previous_epoch_participation.tree_hash_root().0,
+            self.current_epoch_participation.tree_hash_root().0,
+            self.justification_bits.tree_hash_root().0,
+            self.previous_justified_checkpoint.tree_hash_root().0,
+            self.current_justified_checkpoint.tree_hash_root().0,
+            self.finalized_checkpoint.tree_hash_root().0,
+            self.inactivity_scores.tree_hash_root().0,
+            self.current_sync_committee.tree_hash_root().0,
+            self.next_sync_committee.tree_hash_root().0,
+            self.latest_execution_payload_header.tree_hash_root().0,
+            self.next_withdrawal_index.tree_hash_root().0,
+            self.next_withdrawal_validator_index.tree_hash_root().0,
+            self.historical_summaries.tree_hash_root().0,
+        ];
+        // We want to add empty leaves to make the tree a power of 2
+        while leaves.len() < 32 {
+            leaves.push([0; 32]);
+        }
+
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        let indices_to_prove = vec![27];
+        let proof = merkle_tree.proof(&indices_to_prove);
+        let proof_hashes: Vec<B256> = proof
+            .proof_hashes()
+            .iter()
+            .map(|hash| B256::from_slice(hash))
+            .collect();
+
+        proof_hashes
+    }
+}
+
 impl BeaconStateDeneb {
     pub fn build_historical_summaries_proof(&self) -> Vec<B256> {
         let mut leaves: Vec<[u8; 32]> = vec![
@@ -202,13 +279,13 @@ impl BeaconStateDeneb {
         let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
         let indices_to_prove = vec![27];
         let proof = merkle_tree.proof(&indices_to_prove);
-        let proog_hashes: Vec<B256> = proof
+        let proof_hashes: Vec<B256> = proof
             .proof_hashes()
             .iter()
             .map(|hash| B256::from_slice(hash))
             .collect();
 
-        proog_hashes
+        proof_hashes
     }
 }
 
@@ -314,7 +391,7 @@ pub struct HistoricalBatch {
 
 impl HistoricalBatch {
     pub fn build_block_root_proof(&self, block_root_index: u64) -> Vec<B256> {
-        // Build block hash proof for sel.block_roots
+        // Build block hash proof for self.block_roots
         let leaves: Vec<[u8; 32]> = self
             .block_roots
             .iter()

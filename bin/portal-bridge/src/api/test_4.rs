@@ -1,0 +1,89 @@
+#[cfg(test)]
+mod test {
+    use alloy::hex::FromHex;
+    use tree_hash::TreeHash;
+    use alloy::primitives::B256;
+    use ssz_types::{typenum, FixedVector, VariableList};
+    use ssz::Decode;
+    use crate::api::consensus::ConsensusApi;
+    use crate::api::execution::ExecutionApi;
+    use trin_validation::merkle::proof::MerkleTree;
+    use crate::{DEFAULT_BASE_CL_ENDPOINT, DEFAULT_BASE_EL_ENDPOINT};
+    use ethportal_api::types::execution::header_with_proof_new::{BlockProofHistoricalRoots, BlockProofHistoricalSummaries};
+    use trin_validation::historical_roots_acc::HistoricalRootsAccumulator;
+    use url::Url;
+    use ethportal_api::utils::bytes::{hex_encode, hex_decode};
+    use ethportal_api::types::consensus::beacon_state::{HistoricalBatch, BeaconStateCapella};
+    use ethportal_api::types::consensus::historical_summaries::{HistoricalSummaries, HistoricalSummary};
+    use ethportal_api::types::consensus::beacon_block::BeaconBlockBellatrix;
+    use ethportal_api::types::execution::header_with_proof_new::{HeaderWithProof, BlockHeaderProof, BlockProofHistoricalHashesAccumulator};
+    use ethportal_api::types::execution::header_with_proof::{HeaderWithProof as HeaderWithProofOld, BlockHeaderProof as BlockHeaderProofOld};
+    use ethportal_api::types::content_value::history::{HistoryContentValue as HistoryContentValueOld};
+    use e2store::era::Era;
+    use reqwest::{Client, header::HeaderMap, header::HeaderValue, header::CONTENT_TYPE};
+    use crate::bridge::utils::lookup_epoch_acc;
+    use trin_validation::oracle::HeaderOracle;
+    use trin_validation::accumulator::PreMergeAccumulator;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use ethportal_api::types::content_value::history_new::HistoryContentValue;
+    use ethportal_api::{ContentValue, HistoryContentKey, OverlayContentKey};
+
+    fn hwp_1() -> (String, String) {
+        ("0x0088e96d4537bea4d9c05d12549907b32561d3bf31f45aae734cdc119f13406cb6".to_string(),
+            "0x080000001c020000f90211a0d4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479405a56e2d52c817161883f50c441c3228cfe54d9fa0d67e4d450343046425ae4271474353857ab860dbc0a1dde64b41b5cd3a532bf3a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008503ff80000001821388808455ba422499476574682f76312e302e302f6c696e75782f676f312e342e32a0969b900de27b6ac6a67742365dd65f55a0526c41fd18e1b16f1a1215c2e66f5988539bd4979fef1ec401000080ff0700000000000000000000000000000000000000000000000000000023d6398abe4eba641e97a075b30780c12ebe18b24e83a9a9c7bdd94a910cf749bb6bb61aeab6bc5786067f7432bad790642b578881460279ad773a8191596c3087811c70634dbf2ea3abb7199cb5638713844db315d63467f40b5d38eeb884ddcb57866840a050f634417365e9515cd5e6826038ceb45659d85365cfcfceb7a6e9886aaff50b16b6af2bc3bde8b7e701b2cb5022ba49cac9d6c456834e692772b12acf7af78a8375b80ef177c9ad743a14ff0d4935f9ac105444fd57f802fed32495bab257b9585a149a7de4ac53eda7b6df7b9dac7f92325ba05eb1e6b588202048719c250620f4bfa71307470d6c835156db527294c6e6004f9de0c3595a7f1df43427c770506e7e3ca5d021f065544c6ba191d8ffc5fc0805b805d301c926c183ed9ec7e467b962e2304fa7945b6b18042dc2a53cb62b27b28af50fc06db5da2f83bd479f3719b9972fc723c69e4cd13877dcf7cc2a919a95cdf5d7805d9bd9a9f1fbf7a880d82ba9d7af9ed554ce01ea778db5d93d0665ca4fee11f4f873b0b1b58ff1337769b6ee458316030aeac65a5aab68d60fbf214bd44455f892260020000000000000000000000000000000000000000000000000000000000000".to_string())
+    }
+
+    fn hwp_100() -> (String, String) {
+        ("0x00dfe2e70d6c116a541101cecbb256d7402d62125f6ddc9b607d49edc989825c64".to_string(),
+        "0x0800000021020000f90216a0db10afd3efa45327eb284c83cc925bd9bd7966aea53067c1eebe0724d124ec1ea01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794bb7b8287f3f0a933474a79eae42cbca977791171a090c25f6d7fddeb31a6cc5668a6bba77adbadec705eb7aa5a51265c2d1e3bb7aca056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000085042be722b664821388808455ba43eb9e476574682f4c5649562f76312e302e302f6c696e75782f676f312e342e32a05bb43c0772e58084b221c8e0c859a45950c103c712c5b8f11d9566ee078a45018837129c7f29a9364b0186c4fd5a9b0100000000000000000000000000000000000000000000000000005abe24fddf787826108ee6aa6eb22e8f7ab8e1f2fc3e595a7a8b2f3a27a317a1d7e84db77d1b8a63c32551cbd3c2d3dcfc4f187cfe26db5f9322cd38361fea4e6ebce4de13d97c3eb90bf675f243e527b25db30e3c44dd5375ed9db875685fc96665a9508b9ac80d80bffd490c133dafa57bc23b8affd58fefb3bcfbdc0f6159438704ba2c1ca1178b7ed919eb4802061b025078525e1257b076c00cad6797e16afef5c85d945c0dd70daf201917eb815efdaebf6996e6c51da7c981fb126690d23bd9e36890a948c0c69d4081964b32b73144c4a67296f1d26fdca398f8730a2048719c250620f4bfa71307470d6c835156db527294c6e6004f9de0c3595a7f1df43427c770506e7e3ca5d021f065544c6ba191d8ffc5fc0805b805d301c926c183ed9ec7e467b962e2304fa7945b6b18042dc2a53cb62b27b28af50fc06db5da2f83bd479f3719b9972fc723c69e4cd13877dcf7cc2a919a95cdf5d7805d9bd9a9f1fbf7a880d82ba9d7af9ed554ce01ea778db5d93d0665ca4fee11f4f873b0b1b58ff1337769b6ee458316030aeac65a5aab68d60fbf214bd44455f892260020000000000000000000000000000000000000000000000000000000000000".to_string())
+    }
+    fn hwp_700000() -> (String, String) {
+        ("0x0017aa411843cb100e57126e911f51f295f5ddb7e9a3bd25e708990534a828c4b7".to_string(),
+        "0x0800000010020000f90205a0ddbcc7f048f07f5a53aa8ab28d58678c4ee9ba025e09c6b1cf43dfdc372b4031a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d4934794b2930b35844a230f00e51431acae96fe543a0347a09bdd6dcc867f4d14df912ec1e70d095ce79bf2c57b5cbb2e782491e2cadf18c0a0dd51ef69ed6c842c00509751e1e3591abc5d310bf83ab214669bcdb854e1bf9ca06e5073bc8ba11e264b1762308f9a5ea54c7b9d270cba0d70742257b743eb5099b90100110021c3000000000005850200002890018a120410806490002008004001805420813240088004000028c408e3080001121000008828850840108080326904002c00402020a0202048800408002000102028030e082081800b18410002a04b2022208a820200104581601100044a08006c40c000950010000002041040016002000101044278a0604500880204440004004281801100011640819201086404800344208c1000a0003a08001832620c000000000005410108000300d0206c012a800002629901010040800000684022440802600019001a0c60008014000528018210f00482020045806094810001104020864080000000200100021408340006870912965a941834836acfc0837a121d83795bca845c2d36888473656f33a0c21561e4cf2933f9d4312bdba29e7a9cc0b06d838a518af6fd92934cd1cdf95d889813a6b0181c088001d5b15e327ce2ff43cf01000000000000000000000000000000000000000000005e75c2116613d76b1715030d9f483bc7a849462d7b711a9a811dff88c87938c65b290608164fbe452f02986598f59052ddb4a286b5a7e7f8abbf4a20e53a0858e3fd81c3d880b71232739ab3569b4628ac37cc6e0716be332713f1f31ac9bcc47136e986713a8e70667d98a21fa223408653a42e5e30d585004ce24d95065d3c65f83efbdfcf93b0a709dc4846291a2f79da1ddba36ce2a08288ee0cbbc99479ba80f8d1594a28d4dc5e0863b3ef5c0c418fb76b8435e55eb0947f1beb7295c421c54a96c15107be2c31b9bc54d5b808591e1c0c92b1ac355b51c59e2720efd6a4381fc7509fb81d223f9c512b69cc68208ef83dd52f8621bd9bd131f0f1542771cd464d5cc263f193f6b41f4b9730cba0f1302cc23f548a1ade7aae8a2b85a19127d4e230c39d7090e4176b52717e0a03afe17f506c9437dd0e46b968f111549dd1902208e81dbdde5ecf0d6d25f27817feb568ef6ee0e1a553e331d8ad3917015fe433e473e66e8219617c758bf650a0a6c8c7b6de785215541e6bde49dd9d791bb6293773fbd1e5535a78d5dc603fee06e00f7cee7761d6f846ba98fedc7e0020000000000000000000000000000000000000000000000000000000000000".to_string())
+    }
+
+    #[tokio::test]
+    async fn xxx_premerge() {
+/*        let header_oracle = HeaderOracle::default();*/
+        /*let epoch_index = block_number / 8192;*/
+        /*let epoch_acc_path = PathBuf::from("../../portal-accumulators");*/
+        /*let epoch_acc = lookup_epoch_acc(block_number, &header_oracle.header_validator.pre_merge_acc, &epoch_acc_path).await.unwrap();*/
+        /*let epoch_acc = Some(Arc::new(epoch_acc));*/
+        /*let base_url = Url::parse(DEFAULT_BASE_EL_ENDPOINT).unwrap();*/
+        /*let execution_api = ExecutionApi::new(base_url.clone(), base_url, 10).await.unwrap();*/
+        /*let (full_header, _, _, _) = execution_api.get_header(block_number, epoch_acc.clone()).await.unwrap();*/
+        /*let header = full_header.header;*/
+
+        /*let proof = PreMergeAccumulator::construct_proof(&header, epoch_acc.as_ref().unwrap()).unwrap();*/
+        /*let proof: FixedVector<B256, typenum::U15> = proof.proof.to_vec().into();*/
+
+        let (ck, cv) = hwp_700000();
+        let ck = hex_decode(&ck).unwrap();
+        let cv = hex_decode(&cv).unwrap();
+        let ck = HistoryContentKey::try_from_bytes(&ck).unwrap();
+        let old_hwp = HistoryContentValueOld::decode(&ck, &cv).unwrap();
+        let (header, proof) = match old_hwp {
+            HistoryContentValueOld::BlockHeaderWithProof(hwp) => {
+                (hwp.header, hwp.proof)
+            }
+            _ => panic!("unexpected content value"),
+        };
+        let proof = match proof {
+            BlockHeaderProofOld::PreMergeAccumulatorProof(proof) => proof,
+            _ => panic!("unexpected proof"),
+        };
+
+        let proof = BlockProofHistoricalHashesAccumulator::new(proof.proof.clone().into()).unwrap();
+        let hwp = HeaderWithProof {
+            header: header.clone(),
+            proof: BlockHeaderProof::HistoricalHashes(proof),
+        };
+        let content_value = HistoryContentValue::BlockHeaderWithProof(hwp);
+
+        let encoded = content_value.encode();
+        println!("encoded: {}", hex_encode(&encoded));
+
+        assert!(false);
+    }
+}
