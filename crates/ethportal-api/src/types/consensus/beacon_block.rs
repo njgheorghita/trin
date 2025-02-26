@@ -69,6 +69,34 @@ impl BeaconBlock {
     }
 }
 
+impl BeaconBlockCapella {
+    pub fn build_body_root_proof(&self) -> Vec<B256> {
+        let mut leaves: Vec<[u8; 32]> = vec![
+            self.slot.tree_hash_root().0,
+            self.proposer_index.tree_hash_root().0,
+            self.parent_root.tree_hash_root().0,
+            self.state_root.tree_hash_root().0,
+            self.body.tree_hash_root().0,
+        ];
+        // We want to add empty leaves to make the tree a power of 2
+        while leaves.len() < 8 {
+            leaves.push([0; 32]);
+        }
+
+        let merkle_tree = MerkleTree::<Sha256>::from_leaves(&leaves);
+        // We want to prove the body root, which is the 5th leaf
+        let indices_to_prove = vec![4];
+        let proof = merkle_tree.proof(&indices_to_prove);
+        let proof_hashes: Vec<B256> = proof
+            .proof_hashes()
+            .iter()
+            .map(|hash| B256::from_slice(hash))
+            .collect();
+
+        proof_hashes
+    }
+}
+
 impl BeaconBlockBellatrix {
     pub fn build_body_root_proof(&self) -> Vec<B256> {
         let mut leaves: Vec<[u8; 32]> = vec![

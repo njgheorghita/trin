@@ -1,0 +1,31 @@
+[package]
+name = "e2hs-writer"
+authors.workspace = true
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+
+[dependencies]
+async-stream = "0.3.6"
+alloy.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+clap.workspace = true
+ethportal-api.workspace = true
+ssz_types.workspace = true
+ethereum_ssz.workspace = true
+e2store.workspace = true
+tree_hash.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+trin-execution.workspace = true
+portal-bridge.workspace = true
+trin-validation.workspace = true
+tracing.workspace = true
+url.workspace = true

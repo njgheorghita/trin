@@ -110,7 +110,7 @@ impl Header {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VersionEntry {
-    version: Entry,
+    pub version: Entry,
 }
 
 impl Default for VersionEntry {
