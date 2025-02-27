@@ -1,9 +1,15 @@
-use crate::reader::EpochReader;
 use alloy::primitives::B256;
-use tracing::info;
-use e2store::e2hs::{BlockIndex, BlockIndexEntry, BlockTuple, AccumulatorEntry, HeaderWithProofEntry, ReceiptsEntry, BodyEntry, E2HS};
-use e2store::e2store::types::{Entry, VersionEntry};
+use e2store::{
+    e2hs::{
+        AccumulatorEntry, BlockIndex, BlockIndexEntry, BlockTuple, BodyEntry, HeaderWithProofEntry,
+        ReceiptsEntry, E2HS,
+    },
+    e2store::types::{Entry, VersionEntry},
+};
 use futures::StreamExt;
+use tracing::info;
+
+use crate::reader::EpochReader;
 
 pub struct EpochWriter {
     target_dir: String,
@@ -25,9 +31,7 @@ impl EpochWriter {
             let header_with_proof = HeaderWithProofEntry {
                 header_with_proof: block.header_with_proof,
             };
-            let body = BodyEntry {
-                body: block.body,
-            };
+            let body = BodyEntry { body: block.body };
             let receipts = ReceiptsEntry {
                 receipts: block.receipts,
             };
@@ -49,9 +53,7 @@ impl EpochWriter {
             indices: vec![],
             count: 0,
         };
-        let block_index = BlockIndexEntry {
-            block_index,
-        };
+        let block_index = BlockIndexEntry { block_index };
         let e2hs = E2HS {
             version,
             block_tuples,

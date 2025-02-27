@@ -2120,6 +2120,8 @@ dependencies = [
  "futures",
  "portal-bridge",
  "reqwest",
+ "rstest",
+ "serde_yaml",
  "ssz_types",
  "tokio",
  "tracing",

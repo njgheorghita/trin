@@ -5,8 +5,7 @@ pub mod reader;
 pub mod writer;
 use clap::Parser;
 
-use crate::reader::EpochReader;
-use crate::writer::EpochWriter;
+use crate::{reader::EpochReader, writer::EpochWriter};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

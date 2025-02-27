@@ -29,3 +29,5 @@ portal-bridge.workspace = true
 trin-validation.workspace = true
 tracing.workspace = true
 url.workspace = true
+rstest.workspace = true
+serde_yaml.workspace = true

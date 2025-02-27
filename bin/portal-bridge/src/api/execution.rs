@@ -226,7 +226,6 @@ impl ExecutionApi {
         Ok(receipts)
     }
 
-
     /// Return validated Receipts content key / value for the given FullHeader.
     pub async fn get_receipts(
         &self,
