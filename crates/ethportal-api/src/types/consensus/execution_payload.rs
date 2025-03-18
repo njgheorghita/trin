@@ -13,6 +13,7 @@ use crate::{
     types::{
         bytes::ByteList32,
         consensus::{body::Transactions, fork::ForkName, proof::build_merkle_proof_for_index},
+        execution::withdrawal::Withdrawal,
     },
     utils::serde::{hex_fixed_vec, hex_var_list},
 };
@@ -134,16 +135,16 @@ impl ExecutionPayloadBellatrix {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, Encode, Decode, TreeHash)]
-pub struct Withdrawal {
-    #[serde(deserialize_with = "as_u64")]
-    pub index: u64,
-    #[serde(deserialize_with = "as_u64")]
-    pub validator_index: u64,
-    pub address: Address,
-    #[serde(deserialize_with = "as_u64")]
-    pub amount: u64,
-}
+/* #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, Encode, Decode, TreeHash)] */
+/* pub struct Withdrawal { */
+/* #[serde(deserialize_with = "as_u64")] */
+/* pub index: u64, */
+/* #[serde(deserialize_with = "as_u64")] */
+/* pub validator_index: u64, */
+/* pub address: Address, */
+/* #[serde(deserialize_with = "as_u64")] */
+/* pub amount: u64, */
+/* } */
 
 #[superstruct(
     variants(Bellatrix, Capella, Deneb),

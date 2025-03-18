@@ -20,7 +20,7 @@ use ethportal_api::{
         execution_payload::{
             ExecutionPayloadBellatrix, ExecutionPayloadCapella, ExecutionPayloadDeneb,
             ExecutionPayloadHeaderBellatrix, ExecutionPayloadHeaderCapella,
-            ExecutionPayloadHeaderDeneb, Withdrawal,
+            ExecutionPayloadHeaderDeneb,
         },
         fork::ForkName,
         header::BeaconBlockHeader,
@@ -42,6 +42,7 @@ use ethportal_api::{
         },
         update::{LightClientUpdateBellatrix, LightClientUpdateCapella, LightClientUpdateDeneb},
     },
+    types::execution::withdrawal::Withdrawal,
 };
 
 // Generic types
